@@ -91,14 +91,14 @@ class TransitionsTest(unittest.TestCase):
         self.assertEqual(word["stage"], 1)
         self.assertEqual(known, [])
 
-    def test_known_stage1_archives(self):
+    def test_known_stage1_goes_to_practice(self):
         a, b = make("a", stage=1), make("b")
-        queue, known = [a, b], []
-        result, word = w.answer_known(queue, known, a["id"], now="2026-09-19T10:00:00+00:00")
-        self.assertEqual(result, w.ARCHIVED)
+        queue, practice = [a, b], []
+        result, word = w.answer_known(queue, practice, a["id"], now="2026-09-19T10:00:00+00:00")
+        self.assertEqual(result, w.TO_PRACTICE)
         self.assertEqual([x["en"] for x in queue], ["b"])
-        self.assertEqual(known, [word])
-        self.assertEqual(word["archived_at"], "2026-09-19T10:00:00+00:00")
+        self.assertEqual(practice, [word])
+        self.assertEqual((word["stage"], word["practice_since"], word["archived_at"]), (2, "2026-09-19T10:00:00+00:00", None))
 
     def test_unknown_goes_to_third_position_and_keeps_stage(self):
         for stage in (0, 1):

@@ -23,6 +23,15 @@ CARD_START = "10:00"
 CARD_END = "23:00"
 CARDS_PER_DAY = "10"
 UTC_OFFSET_HOURS = "3"  # Moscow time, no DST
+# Weekly typed practice of words answered "Знаю" in both directions (mon..sun, HH:MM).
+PRACTICE_DAY = "sat"
+PRACTICE_TIME = "09:00"
+# Workers AI model for generated cards (free tier: 10,000 neurons/day, ~13 per card).
+AI_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct"
+
+# Workers AI binding used by /gen and auto-generation; needs no API key.
+[ai]
+binding = "AI"
 
 # The cron itself runs every minute and only checks whether the minute is a slot,
 # so nothing here needs changing when the schedule above changes.

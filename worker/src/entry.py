@@ -7,6 +7,8 @@ import json
 import traceback
 from datetime import datetime, timezone
 
+from js import Object
+from pyodide.ffi import to_js
 from workers import Response, WorkerEntrypoint, fetch
 
 from shared.bot import Bot
@@ -43,7 +45,41 @@ class Telegram:
         return data
 
 
+class WorkersAI:
+    """Cloudflare Workers AI through the `AI` binding (no API key needed)."""
+
+    def __init__(self, binding):
+        self.binding = binding
+
+    async def run(self, model, payload):
+        result = await self.binding.run(model, to_js(payload, dict_converter=Object.fromEntries))
+        return result.to_py() if hasattr(result, "to_py") else result
+
+
+class HttpAI:
+    """Local development only: POST {"model", "input"} to AI_HTTP_URL (e.g. a mock server)."""
+
+    def __init__(self, url):
+        self.url = url
+
+    async def run(self, model, payload):
+        response = await fetch(
+            self.url,
+            method="POST",
+            headers={"content-type": "application/json"},
+            body=json.dumps({"model": model, "input": payload}),
+        )
+        return await response.json()
+
+
 class Default(WorkerEntrypoint):
+    def _ai(self):
+        binding = getattr(self.env, "AI", None)
+        if binding is not None:
+            return WorkersAI(binding)
+        url = getattr(self.env, "AI_HTTP_URL", None)
+        return HttpAI(url) if url else None
+
     def _bot(self):
         env_get = lambda name: getattr(self.env, name, None)  # noqa: E731
         return Bot(
@@ -51,6 +87,8 @@ class Default(WorkerEntrypoint):
             Telegram(self.env.TELEGRAM_BOT_TOKEN, env_get("TELEGRAM_API_BASE")),
             owner=env_get("OWNER_USERNAME"),
             schedule=Schedule.from_env(env_get),
+            ai=self._ai(),
+            ai_model=env_get("AI_MODEL"),
         )
 
     async def scheduled(self, controller, *args):

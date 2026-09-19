@@ -52,10 +52,27 @@ def _split_pair(line):
     return candidates[0]
 
 
-def parse_add_message(text):
-    """Parse "en - ru" on the first line plus optional "example en - example ru" lines (any order).
+SYNONYMS_PREFIX = "Синонимы:"
+_SYNONYMS_LINE = re.compile(r"^(синонимы|синоним|synonyms|syn)\s*:\s*", re.IGNORECASE)
 
-    Returns (en, ru, examples). Raises ParseError with a human-readable message.
+
+def _parse_synonyms(text):
+    """"fairly - довольно; rather" -> [{"en": "fairly", "ru": "довольно"}, {"en": "rather", "ru": ""}]."""
+    synonyms = []
+    for item in text.split(";"):
+        item = item.strip()
+        if not item:
+            continue
+        pair = _split_pair(item)
+        synonyms.append({"en": pair[0], "ru": pair[1]} if pair else {"en": item, "ru": ""})
+    return synonyms
+
+
+def parse_card_text(text):
+    """Parse a card: "en - ru", optional example lines and an optional "Синонимы: a - б; c - д" line.
+
+    Language order in each line is free. Returns (en, ru, examples, synonyms).
+    Raises ParseError with a human-readable message.
     """
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     if not lines:
@@ -63,21 +80,43 @@ def parse_add_message(text):
     pair = _split_pair(lines[0])
     if pair is None:
         raise ParseError(f"Первая строка должна быть в формате «слово{SEPARATOR}перевод» (тире можно и длинное «—»).")
-    examples = []
+    examples, synonyms = [], []
     for number, line in enumerate(lines[1:], start=2):
+        prefix = _SYNONYMS_LINE.match(line)
+        if prefix:
+            synonyms += _parse_synonyms(line[prefix.end() :])
+            continue
         example = _split_pair(line)
         if example is None:
             raise ParseError(f"Строка {number}: нет разделителя «{SEPARATOR}» между примером и переводом.")
         examples.append({"en": example[0], "ru": example[1]})
-    return pair[0], pair[1], examples
+    return pair[0], pair[1], examples, synonyms
 
 
-def new_word(en, ru, examples=None):
+def parse_add_message(text):
+    """Like parse_card_text but without synonyms: returns (en, ru, examples)."""
+    en, ru, examples, _ = parse_card_text(text)
+    return en, ru, examples
+
+
+def card_to_text(word):
+    """Inverse of parse_card_text: the text a user can copy, fix and send back."""
+    lines = [f"{word['en']}{SEPARATOR}{word['ru']}"]
+    lines += [f"{e['en']}{SEPARATOR}{e['ru']}" for e in word.get("examples") or []]
+    synonyms = word.get("synonyms") or []
+    if synonyms:
+        items = [f"{s['en']}{SEPARATOR}{s['ru']}" if s.get("ru") else s["en"] for s in synonyms]
+        lines.append(f"{SYNONYMS_PREFIX} " + "; ".join(items))
+    return "\n".join(lines)
+
+
+def new_word(en, ru, examples=None, synonyms=None):
     return {
         "id": str(uuid.uuid4()),
         "en": en,
         "ru": ru,
         "examples": list(examples or []),
+        "synonyms": list(synonyms or []),
         "shown_count": 0,
         "stage": 0,
         "added_at": now_iso(),
@@ -85,16 +124,16 @@ def new_word(en, ru, examples=None):
     }
 
 
-def _compact(text):
+def compact(text):
     """Drop all whitespace and ignore case: "Look  up" == "lookup"."""
     return "".join(text.split()).casefold()
 
 
 def find_duplicate(en, ru, queue, known):
     """Return an existing word with the same pair, compared without whitespace."""
-    key = (_compact(en), _compact(ru))
+    key = (compact(en), compact(ru))
     for word in list(queue) + list(known):
-        if (_compact(word["en"]), _compact(word["ru"])) == key:
+        if (compact(word["en"]), compact(word["ru"])) == key:
             return word
     return None
 
@@ -115,7 +154,7 @@ def current_example(word):
 
 # Results of answer_known / answer_unknown.
 FLIPPED = "flipped"      # stage 0 -> 1, moved to the end of the queue
-ARCHIVED = "archived"    # stage 1 -> moved to known
+TO_PRACTICE = "practice" # stage 1 -> waits for the Saturday practice (stage 2)
 REQUEUED = "requeued"    # "Не знаю": moved to RETRY_POSITION
 NOT_FOUND = "not_found"  # card is stale (word already archived or deleted)
 
@@ -135,8 +174,15 @@ def _take(queue, word_id, stage):
     return word
 
 
-def answer_known(queue, known, word_id, now=None, stage=None):
-    """Apply "Знаю". Mutates queue/known in place and returns (result, word)."""
+PRACTICE_STAGE = 2
+
+
+def answer_known(queue, practice, word_id, now=None, stage=None):
+    """Apply "Знаю". Mutates queue/practice in place and returns (result, word).
+
+    Stage 0 -> stage 1 at the end of the queue; stage 1 -> the practice pool, where the
+    word waits for the typed Saturday practice before it can be archived.
+    """
     word = _take(queue, word_id, stage)
     if word is None:
         return NOT_FOUND, None
@@ -144,9 +190,10 @@ def answer_known(queue, known, word_id, now=None, stage=None):
         word["stage"] = 1
         queue.append(word)
         return FLIPPED, word
-    word["archived_at"] = now or now_iso()
-    known.append(word)
-    return ARCHIVED, word
+    word["stage"] = PRACTICE_STAGE
+    word["practice_since"] = now or now_iso()
+    practice.append(word)
+    return TO_PRACTICE, word
 
 
 def answer_unknown(queue, word_id, stage=None):

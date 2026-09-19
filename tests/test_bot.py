@@ -91,6 +91,17 @@ class BotTest(unittest.TestCase):
     def known(self, user=OWNER.lower()):
         return self.store.json(f"known:{user}") or []
 
+    def practise_all_correct(self):
+        """Run /practice answering both rounds correctly and skipping the sentences."""
+        self.msg("/practice")
+        session = self.store.json(f"session:{OWNER.lower()}")
+        by_id = {x["id"]: x for x in self.store.json(f"practice:{OWNER.lower()}")}
+        words = [by_id[i] for i in session["ids"]]
+        self.msg(", ".join(x["en"] for x in words))
+        self.msg(", ".join(x["ru"] for x in words))
+        if (self.store.json(f"session:{OWNER.lower()}") or {}).get("round") == "sentences":
+            self.press("px")
+
     def last_card_word(self):
         """Callback suffix "<id>:<stage>" of the last card sent."""
         card = [p for p in self.tg.sent() if "inline_keyboard" in p.get("reply_markup", {})][-1]
@@ -169,16 +180,18 @@ class BotTest(unittest.TestCase):
         self.assertEqual(answers[-1]["text"], "Эта карточка уже неактуальна")
         self.assertEqual(self.known(), [])
 
-        # "Знаю" on the EN->RU card archives it
+        # "Знаю" on the EN->RU card sends it to the practice pool, not yet to the archive
         cat_word_id = cat_id.split(":")[0]
         self.press(f"k:{cat_word_id}:1")
-        self.assertEqual([w["en"] for w in self.known()], ["cat"])
-        self.assertTrue(self.known()[0]["archived_at"])
-        self.assertTrue(any(c.format(en="cat") == self.tg.last_text() for c in cards.ARCHIVE_CHEERS))
+        self.assertEqual(self.known(), [])
+        practice = self.store.json(f"practice:{OWNER.lower()}")
+        self.assertEqual([(w["en"], w["stage"]) for w in practice], [("cat", 2)])
+        answers = [p for m, p in self.tg.calls if m == "answerCallbackQuery"]
+        self.assertIn("субботней практики", answers[-1]["text"])
         self.press("k:" + cat_id)
         answers = [p for m, p in self.tg.calls if m == "answerCallbackQuery"]
         self.assertEqual(answers[-1]["text"], "Эта карточка уже неактуальна")
-        self.assertEqual(len(self.known()), 1)
+        self.assertEqual(len(practice), 1)
 
     def test_no_new_cards_until_answered(self):
         self.msg("/start")
@@ -219,10 +232,11 @@ class BotTest(unittest.TestCase):
     def test_review_flow(self):
         for i, word in enumerate(["one - один", "two - два", "three - три"]):
             self.msg(word)
-        for _ in range(6):  # archive everything: each word needs two "Знаю"
+        for _ in range(6):  # each word needs two "Знаю", then the practice
             run(self.bot.broadcast_cards())
             self.press("k:" + self.last_card_word())
         self.assertEqual(self.queue(), [])
+        self.practise_all_correct()
         self.assertEqual(len(self.known()), 3)
 
         self.msg(cards.REVIEW_BUTTON)
@@ -280,6 +294,7 @@ class BotTest(unittest.TestCase):
         for _ in range(2):
             run(self.bot.broadcast_cards())
             self.press("k:" + self.last_card_word())
+        self.practise_all_correct()
         self.assertEqual(run(self.bot.broadcast_stats()), [OWNER])
         text = self.tg.last_text()
         self.assertIn("Выучено слов: <b>1</b>", text)

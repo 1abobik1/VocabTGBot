@@ -1,9 +1,7 @@
 import asyncio
 import unittest
 from datetime import datetime, timedelta, timezone
-from unittest import mock
 
-from shared import bot as bot_module
 from shared.bot import Bot
 from shared.schedule import Schedule
 from tests.test_bot import CHAT, OWNER, FakeStore, FakeTelegram
@@ -29,12 +27,6 @@ class ScheduleTest(unittest.TestCase):
         self.assertTrue(schedule.is_slot(datetime(2026, 9, 21, 8, 18, tzinfo=timezone.utc)))  # 11:18 MSK
         for hour, minute in [(9, 59), (10, 1), (11, 17), (22, 0), (23, 0), (3, 0)]:
             self.assertFalse(schedule.is_slot(msk(hour, minute)), (hour, minute))
-
-    def test_last_slot(self):
-        schedule = Schedule()
-        self.assertIsNone(schedule.last_slot(msk(9, 30)))
-        self.assertEqual(schedule.last_slot(msk(11, 30)), msk(11, 18))
-        self.assertEqual(schedule.last_slot(msk(23, 50)), msk(21, 42))
 
     def test_answer_buffer(self):
         # 20 cards in 10:00-14:00 = every 12 minutes, the last at 13:48: less than 30 minutes left
@@ -87,15 +79,11 @@ class CronTest(unittest.TestCase):
         self.msg("/start")
         for word in ["apple - яблоко", "cat - кот"]:
             self.msg(word)
-        sent_at = msk(10, 0)
-        with mock.patch.object(bot_module.w, "now_iso", return_value=sent_at.isoformat()):
-            self.tick(sent_at)
+        self.tick(msk(10, 0))
         card = self.cards_sent()[-1]["reply_markup"]["inline_keyboard"][0][1]["callback_data"]
-
-        now = msk(11, 40)  # the 11:18 slot passed while apple was unanswered
-        with mock.patch.object(bot_module, "datetime") as fake_dt:
-            fake_dt.now.return_value = now
-            self.press(card)
+        self.tick(msk(11, 18))  # skipped: apple is unanswered
+        self.assertEqual(len(self.cards_sent()), 1)
+        self.press(card)
         self.assertEqual(len(self.cards_sent()), 2)
         self.assertTrue(self.cards_sent()[-1]["text"].startswith("Кот"))
 
@@ -103,12 +91,9 @@ class CronTest(unittest.TestCase):
         self.msg("/start")
         for word in ["apple - яблоко", "cat - кот"]:
             self.msg(word)
-        with mock.patch.object(bot_module.w, "now_iso", return_value=msk(10, 0).isoformat()):
-            self.tick(msk(10, 0))
+        self.tick(msk(10, 0))
         card = self.cards_sent()[-1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
-        with mock.patch.object(bot_module, "datetime") as fake_dt:
-            fake_dt.now.return_value = msk(10, 30)
-            self.press(card)
+        self.press(card)  # answered before the 11:18 slot: nothing was missed
         self.assertEqual(len(self.cards_sent()), 1)
 
 
