@@ -1,20 +1,12 @@
-name: Send flashcard
+name: Send flashcard (manual)
+
+# Scheduled cards are sent by the Cloudflare Worker cron (see worker/wrangler.toml):
+# GitHub cron often starts 5–30 minutes late, so it is not used for the card schedule.
+# This workflow stays as a manual fallback: Actions → "Send flashcard (manual)" → Run workflow.
+# Like the Worker, it skips users whose previous card is still unanswered.
 
 on:
-  schedule:
-    # ── Card schedule ─────────────────────────────────────────────────────────
-    # GitHub cron is in UTC. Moscow time (MSK) = UTC+3, so subtract 3 hours.
-    #
-    #   "0 7-19/2 * * *"  →  every 2 hours from 07:00 to 19:00 UTC
-    #                     →  10:00, 12:00, 14:00, 16:00, 18:00, 20:00, 22:00 MSK
-    #
-    # To change the window: edit "7-19" (first and last UTC hour).
-    #   e.g. 09:00–21:00 MSK  →  "6-18"
-    # To change the frequency: edit "/2" (every N hours).
-    #   e.g. every hour → "0 7-19 * * *", every 3 hours → "0 7-19/3 * * *"
-    # Note: GitHub may start scheduled runs 5–30 minutes late under load.
-    - cron: "0 7-19/2 * * *"
-  workflow_dispatch: {} # "Run workflow" button for a manual card
+  workflow_dispatch: {}
 
 concurrency:
   group: vocab-kv-writer

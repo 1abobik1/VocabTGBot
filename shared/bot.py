@@ -5,6 +5,7 @@
 """
 
 import json
+from datetime import datetime, timezone
 
 from . import cards
 from .cards import escape
@@ -61,11 +62,16 @@ def find_user(users, username):
 
 
 class Bot:
-    def __init__(self, store, tg, owner=None):
-        """`owner` is the Telegram username that seeds allowed_users on the first message."""
+    def __init__(self, store, tg, owner=None, schedule=None):
+        """`owner` is the Telegram username that seeds allowed_users on the first message.
+
+        `schedule` (shared.schedule.Schedule) enables sending a card right after an answer
+        when a slot was skipped because the previous card was still unanswered.
+        """
         self.repo = Repo(store)
         self.tg = tg
         self.owner = owner
+        self.schedule = schedule
 
     # ---- sending helpers -------------------------------------------------
 
@@ -84,6 +90,8 @@ class Bot:
         word = queue[0]
         await self.send(chat_id, cards.render_card(word), cards.card_keyboard(word))
         word["shown_count"] = word.get("shown_count", 0) + 1
+        # Marks the card as awaiting an answer: no new scheduled cards until it is answered.
+        word["sent_at"] = w.now_iso()
         await self.repo.put(key, queue)
         return word
 
@@ -93,7 +101,7 @@ class Bot:
         queue = await self.repo.get(queue_key(name), [])
         await self.send(chat_id, cards.render_stats(w.weekly_stats(known), len(queue)))
 
-    # ---- scheduled jobs (GitHub Actions) ----------------------------------
+    # ---- scheduled jobs (Worker cron, GitHub Actions) ---------------------
 
     async def _users_with_chat(self):
         # Read-only: the list is seeded by the Worker on the first message.
@@ -101,11 +109,20 @@ class Bot:
         return [u for u in users if u.get("chat_id")]
 
     async def broadcast_cards(self):
+        """Send the next card to every user whose previous card has been answered."""
         sent = []
         for user in await self._users_with_chat():
-            if await self.send_card(user["username"], user["chat_id"]):
+            queue = await self.repo.get(queue_key(normalize_username(user["username"])), [])
+            if queue and not w.is_awaiting_answer(queue):
+                await self.send_card(user["username"], user["chat_id"])
                 sent.append(user["username"])
         return sent
+
+    async def on_cron(self, now):
+        """Called by the Worker cron every minute; sends cards only on schedule slots."""
+        if self.schedule is None or not self.schedule.is_slot(now):
+            return []
+        return await self.broadcast_cards()
 
     async def broadcast_stats(self):
         users = await self._users_with_chat()
@@ -149,18 +166,22 @@ class Bot:
             await self.send(chat_id, "Режим добавления слов.\n\n" + cards.HELP_TEXT, cards.main_keyboard())
             return
 
-        action, _, word_id = data.partition(":")
-        if action not in ("k", "n") or not word_id:
+        # "k:<id>:<stage>" / "n:<id>:<stage>"; cards sent before the stage suffix have no ":<stage>".
+        action, _, rest = data.partition(":")
+        word_id, _, stage = rest.partition(":")
+        if action not in ("k", "n") or not word_id or (stage and not stage.isdigit()):
             await self.tg.call("answerCallbackQuery", {"callback_query_id": query["id"]})
             return
+        stage = int(stage) if stage else None
 
         queue = await self.repo.get(queue_key(username), [])
+        pending_since = next((x["sent_at"] for x in queue if x["id"] == word_id and x.get("sent_at")), None)
         if action == "k":
             known = await self.repo.get(known_key(username), [])
-            result, word = w.answer_known(queue, known, word_id)
+            result, word = w.answer_known(queue, known, word_id, stage=stage)
         else:
             known = None
-            result, word = w.answer_unknown(queue, word_id)
+            result, word = w.answer_unknown(queue, word_id, stage=stage)
 
         notices = {
             w.FLIPPED: "👍 Теперь проверю в обратную сторону",
@@ -182,6 +203,16 @@ class Bot:
             )
         if result == w.ARCHIVED:
             await self.send(chat_id, cards.archive_cheer(word))
+        if result != w.NOT_FOUND and self._missed_slot(pending_since) and not w.is_awaiting_answer(queue):
+            # A slot passed while this card waited for an answer: deliver the skipped card now.
+            await self.send_card(username, chat_id)
+
+    def _missed_slot(self, pending_since):
+        if self.schedule is None or not pending_since:
+            return False
+        now = datetime.now(timezone.utc)
+        last_slot = self.schedule.last_slot(now)
+        return last_slot is not None and w.parse_iso(pending_since) < last_slot
 
     async def _on_message(self, message, user, users, username, chat_id):
         text = (message.get("text") or "").strip()

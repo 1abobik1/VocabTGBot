@@ -24,7 +24,7 @@ HELP_TEXT = (
     "<code>apple - яблоко\n"
     "I ate an apple. - Я съел яблоко.</code>\n\n"
     "Первая строка — слово и перевод, остальные (необязательно) — примеры. "
-    "Разделитель — « - » с пробелами (дефис внутри слова, как в «куда-то», можно). "
+    "Разделитель — « - » или « — » с пробелами (дефис внутри слова, как в «куда-то», можно). "
     "Порядок языков любой: «куда-то - somewhere» тоже сработает.\n\n"
     "Карточки приходят по расписанию. Кнопки:\n"
     f"• «{REVIEW_BUTTON}» — список выученных слов, можно вернуть забытые в очередь\n"
@@ -61,11 +61,14 @@ def render_card(word):
 
 
 def card_keyboard(word):
+    # The stage in callback_data makes a button from an older copy of the card stale
+    # once the word has flipped direction.
+    stage = word.get("stage", 0)
     return {
         "inline_keyboard": [
             [
-                {"text": KNOWN_BUTTON, "callback_data": f"k:{word['id']}"},
-                {"text": UNKNOWN_BUTTON, "callback_data": f"n:{word['id']}"},
+                {"text": KNOWN_BUTTON, "callback_data": f"k:{word['id']}:{stage}"},
+                {"text": UNKNOWN_BUTTON, "callback_data": f"n:{word['id']}:{stage}"},
             ]
         ]
     }

@@ -11,6 +11,24 @@ compatibility_flags = ["python_workers", "disable_python_external_sdk"]
 command = "rm -rf src/shared && cp -r ../shared src/shared && rm -rf src/shared/__pycache__"
 watch_dir = "../shared"
 
+# ── Card schedule ────────────────────────────────────────────────────────────
+# CARDS_PER_DAY cards, evenly spaced from CARD_START; the step is
+# (CARD_END - CARD_START) / CARDS_PER_DAY. Defaults: 13h / 10 = 78 min →
+# 10:00, 11:18, 12:36, 13:54, 15:12, 16:30, 17:48, 19:06, 20:24, 21:42 MSK.
+# A new card is sent only after the previous one was answered ("Знаю"/"Не знаю").
+# The last card must leave at least 30 minutes before CARD_END, otherwise the
+# Worker refuses the config. Redeploy after changing these values.
+[vars]
+CARD_START = "10:00"
+CARD_END = "23:00"
+CARDS_PER_DAY = "10"
+UTC_OFFSET_HOURS = "3"  # Moscow time, no DST
+
+# The cron itself runs every minute and only checks whether the minute is a slot,
+# so nothing here needs changing when the schedule above changes.
+[triggers]
+crons = ["* * * * *"]
+
 # KV namespace id is kept out of the public repo: `build_config.sh`
 # appends this block from the CF_KV_NAMESPACE_ID env var at deploy time.
 # [[kv_namespaces]]

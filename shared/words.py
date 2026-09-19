@@ -9,6 +9,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 SEPARATOR = " - "
+# Hyphen, en dash and em dash are equivalent separators; spaces around them are required.
+_SEPARATOR_RE = re.compile(r"\s[-\u2013\u2014]\s")
 # "Не знаю" puts the word back at this index: after the current first and second words.
 RETRY_POSITION = 2
 
@@ -29,18 +31,25 @@ _CYRILLIC = re.compile("[а-яё]", re.IGNORECASE)
 
 
 def _split_pair(line):
-    """Split "en - ru" (or "ru - en") on the first separator and return (en, ru).
+    """Split "en - ru" (or "ru - en", with "-", "–" or "—") and return (en, ru).
 
     Hyphens inside words ("куда-то", "well-being") are kept: the separator needs spaces
-    around it. Sides are swapped when only the left one is Cyrillic, so either order works.
+    around it. When a line has several dashes ("Москва — столица. - Moscow is the capital"),
+    the first one that leaves Russian on one side and non-Russian on the other wins,
+    otherwise the first one. Either language order works.
     """
-    left, sep, right = line.partition(SEPARATOR)
-    left, right = left.strip(), right.strip()
-    if not sep or not left or not right:
+    candidates = []
+    for match in _SEPARATOR_RE.finditer(line):
+        left, right = line[: match.start()].strip(), line[match.end() :].strip()
+        if left and right:
+            candidates.append((left, right))
+    if not candidates:
         return None
-    if _CYRILLIC.search(left) and not _CYRILLIC.search(right):
-        return right, left
-    return left, right
+    for left, right in candidates:
+        left_ru, right_ru = bool(_CYRILLIC.search(left)), bool(_CYRILLIC.search(right))
+        if left_ru != right_ru:
+            return (right, left) if left_ru else (left, right)
+    return candidates[0]
 
 
 def parse_add_message(text):
@@ -53,7 +62,7 @@ def parse_add_message(text):
         raise ParseError("Пустое сообщение.")
     pair = _split_pair(lines[0])
     if pair is None:
-        raise ParseError(f"Первая строка должна быть в формате «слово{SEPARATOR}перевод».")
+        raise ParseError(f"Первая строка должна быть в формате «слово{SEPARATOR}перевод» (тире можно и длинное «—»).")
     examples = []
     for number, line in enumerate(lines[1:], start=2):
         example = _split_pair(line)
@@ -111,12 +120,26 @@ REQUEUED = "requeued"    # "Не знаю": moved to RETRY_POSITION
 NOT_FOUND = "not_found"  # card is stale (word already archived or deleted)
 
 
-def answer_known(queue, known, word_id, now=None):
-    """Apply "Знаю". Mutates queue/known in place and returns (result, word)."""
+def is_awaiting_answer(queue):
+    """True while a sent card has not been answered with "Знаю" / "Не знаю"."""
+    return any(word.get("sent_at") for word in queue)
+
+
+def _take(queue, word_id, stage):
+    """Pop the word for an answer; `stage` (from the button) must match to reject stale cards."""
     index = find_index(queue, word_id)
-    if index < 0:
-        return NOT_FOUND, None
+    if index < 0 or (stage is not None and queue[index].get("stage", 0) != stage):
+        return None
     word = queue.pop(index)
+    word.pop("sent_at", None)
+    return word
+
+
+def answer_known(queue, known, word_id, now=None, stage=None):
+    """Apply "Знаю". Mutates queue/known in place and returns (result, word)."""
+    word = _take(queue, word_id, stage)
+    if word is None:
+        return NOT_FOUND, None
     if word.get("stage", 0) == 0:
         word["stage"] = 1
         queue.append(word)
@@ -126,12 +149,11 @@ def answer_known(queue, known, word_id, now=None):
     return ARCHIVED, word
 
 
-def answer_unknown(queue, word_id):
+def answer_unknown(queue, word_id, stage=None):
     """Apply "Не знаю": stage stays, word goes to index 2 of the queue."""
-    index = find_index(queue, word_id)
-    if index < 0:
+    word = _take(queue, word_id, stage)
+    if word is None:
         return NOT_FOUND, None
-    word = queue.pop(index)
     queue.insert(RETRY_POSITION, word)
     return REQUEUED, word
 
@@ -158,6 +180,7 @@ def restore_from_known(queue, known, word_ids):
         word = known.pop(index)
         word["stage"] = 0
         word["archived_at"] = None
+        word.pop("sent_at", None)
         queue.append(word)
         restored.append(word)
     return restored

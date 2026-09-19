@@ -1,4 +1,7 @@
-"""Send the next flashcard to every allowed user (run by .github/workflows/send-card.yml)."""
+"""Manually send the next flashcard to every user whose previous card is answered.
+
+Scheduled cards come from the Worker cron; this is run by .github/workflows/send-card.yml.
+"""
 
 import asyncio
 

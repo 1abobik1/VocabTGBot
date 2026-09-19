@@ -40,6 +40,20 @@ class ParseTest(unittest.TestCase):
         _, _, examples = w.parse_add_message("well-being - благополучие\nЭто важно - It matters")
         self.assertEqual(examples, [{"en": "It matters", "ru": "Это важно"}])
 
+    def test_dashes_are_equivalent(self):
+        for text in ["apple - яблоко", "apple — яблоко", "apple – яблоко", "яблоко — apple", "apple   —   яблоко"]:
+            self.assertEqual(w.parse_add_message(text)[:2], ("apple", "яблоко"), text)
+        with self.assertRaises(w.ParseError):
+            w.parse_add_message("apple—яблоко")  # needs spaces around the dash
+
+    def test_dash_inside_russian_sentence(self):
+        _, _, examples = w.parse_add_message(
+            "capital — столица\nМосква — столица России. — Moscow is the capital of Russia."
+        )
+        self.assertEqual(examples, [{"en": "Moscow is the capital of Russia.", "ru": "Москва — столица России."}])
+        _, _, examples = w.parse_add_message("capital - столица\nMoscow is the capital. - Москва — столица.")
+        self.assertEqual(examples, [{"en": "Moscow is the capital.", "ru": "Москва — столица."}])
+
     def test_word_without_examples(self):
         self.assertEqual(w.parse_add_message("cat - кот"), ("cat", "кот", []))
 
@@ -166,8 +180,10 @@ class CardTest(unittest.TestCase):
     def test_keyboard(self):
         buttons = cards.card_keyboard(self.word)["inline_keyboard"][0]
         self.assertEqual([b["text"] for b in buttons], ["Знаю", "Не знаю"])
-        self.assertEqual(buttons[0]["callback_data"], "k:" + self.word["id"])
-        self.assertEqual(buttons[1]["callback_data"], "n:" + self.word["id"])
+        self.assertEqual(buttons[0]["callback_data"], f"k:{self.word['id']}:0")
+        self.assertEqual(buttons[1]["callback_data"], f"n:{self.word['id']}:0")
+        self.word["stage"] = 1
+        self.assertEqual(cards.card_keyboard(self.word)["inline_keyboard"][0][0]["callback_data"], f"k:{self.word['id']}:1")
         self.assertLessEqual(len(buttons[1]["callback_data"].encode()), 64)
 
     def test_chunk_lines(self):

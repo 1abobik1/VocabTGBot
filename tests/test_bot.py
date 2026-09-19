@@ -92,6 +92,7 @@ class BotTest(unittest.TestCase):
         return self.store.json(f"known:{user}") or []
 
     def last_card_word(self):
+        """Callback suffix "<id>:<stage>" of the last card sent."""
         card = [p for p in self.tg.sent() if "inline_keyboard" in p.get("reply_markup", {})][-1]
         return card["reply_markup"]["inline_keyboard"][0][0]["callback_data"][2:]
 
@@ -162,8 +163,15 @@ class BotTest(unittest.TestCase):
         self.assertEqual([w["en"] for w in self.queue()], ["dog", "apple", "cat"])
         self.assertEqual(self.queue()[2]["stage"], 1)
 
-        # pressing an old button again does nothing harmful
-        self.press("k:" + cat_id)  # cat is stage 1 now -> archived (this is the second direction)
+        # the old RU->EN card of cat is stale now: it must not archive the word
+        self.press("k:" + cat_id)
+        answers = [p for m, p in self.tg.calls if m == "answerCallbackQuery"]
+        self.assertEqual(answers[-1]["text"], "Эта карточка уже неактуальна")
+        self.assertEqual(self.known(), [])
+
+        # "Знаю" on the EN->RU card archives it
+        cat_word_id = cat_id.split(":")[0]
+        self.press(f"k:{cat_word_id}:1")
         self.assertEqual([w["en"] for w in self.known()], ["cat"])
         self.assertTrue(self.known()[0]["archived_at"])
         self.assertTrue(any(c.format(en="cat") == self.tg.last_text() for c in cards.ARCHIVE_CHEERS))
@@ -171,6 +179,28 @@ class BotTest(unittest.TestCase):
         answers = [p for m, p in self.tg.calls if m == "answerCallbackQuery"]
         self.assertEqual(answers[-1]["text"], "Эта карточка уже неактуальна")
         self.assertEqual(len(self.known()), 1)
+
+    def test_no_new_cards_until_answered(self):
+        self.msg("/start")
+        for word in ["apple - яблоко", "cat - кот"]:
+            self.msg(word)
+        self.assertEqual(run(self.bot.broadcast_cards()), [OWNER])
+        first = self.last_card_word()
+        self.assertTrue(self.queue()[0]["sent_at"])
+        cards_before = len(self.tg.sent())
+        self.assertEqual(run(self.bot.broadcast_cards()), [])  # still waiting for an answer
+        self.assertEqual(len(self.tg.sent()), cards_before)
+
+        self.press("n:" + first)
+        self.assertFalse(any(w.get("sent_at") for w in self.queue()))
+        self.assertEqual(run(self.bot.broadcast_cards()), [OWNER])
+        self.assertTrue(self.tg.last_text().startswith("Кот"))
+
+    def test_legacy_buttons_without_stage_still_work(self):
+        self.msg("apple - яблоко")
+        run(self.bot.broadcast_cards())
+        self.press("k:" + self.last_card_word().split(":")[0])
+        self.assertEqual(self.queue()[0]["stage"], 1)
 
     def test_stage1_card_is_reversed(self):
         self.msg("apple - яблоко\nI ate an apple. - Я съел яблоко.")

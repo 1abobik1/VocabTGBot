@@ -5,10 +5,12 @@ All business logic lives in `shared/` (copied into src/ by the [build] step in w
 
 import json
 import traceback
+from datetime import datetime, timezone
 
 from workers import Response, WorkerEntrypoint, fetch
 
 from shared.bot import Bot
+from shared.schedule import Schedule
 
 
 class KVStore:
@@ -42,6 +44,22 @@ class Telegram:
 
 
 class Default(WorkerEntrypoint):
+    def _bot(self):
+        env_get = lambda name: getattr(self.env, name, None)  # noqa: E731
+        return Bot(
+            KVStore(self.env.VOCAB_KV),
+            Telegram(self.env.TELEGRAM_BOT_TOKEN, env_get("TELEGRAM_API_BASE")),
+            owner=env_get("OWNER_USERNAME"),
+            schedule=Schedule.from_env(env_get),
+        )
+
+    async def scheduled(self, controller, *args):
+        """Cron trigger (every minute): sends a card when the minute is a schedule slot."""
+        when = datetime.fromtimestamp(controller.scheduledTime / 1000, tz=timezone.utc)
+        sent = await self._bot().on_cron(when)
+        if sent:
+            print(f"cards sent at {when.isoformat()} to {sent}")
+
     async def fetch(self, request):
         if request.method != "POST":
             return Response("ok")
@@ -52,12 +70,7 @@ class Default(WorkerEntrypoint):
             return Response("forbidden", status=403)
         try:
             update = json.loads(body)
-            bot = Bot(
-                KVStore(self.env.VOCAB_KV),
-                Telegram(self.env.TELEGRAM_BOT_TOKEN, getattr(self.env, "TELEGRAM_API_BASE", None)),
-                owner=getattr(self.env, "OWNER_USERNAME", None),
-            )
-            await bot.handle_update(update)
+            await self._bot().handle_update(update)
         except Exception:
             # Always answer 200, otherwise Telegram keeps redelivering the same update.
             traceback.print_exc()
