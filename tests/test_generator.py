@@ -88,6 +88,34 @@ class ParseCardsTest(unittest.TestCase):
         random_topic = generator.build_input("B1", 1)["messages"][0]["content"]
         self.assertTrue(any(f"Topic: {t}." in random_topic for t in generator.RANDOM_TOPICS))
 
+    def test_generate_tops_up_dropped_cards(self):
+        ai = FakeAI(
+            {"response": {"cards": [card("bug", "ошибка"), card("deploy", "развернуть"), card("ex-boyfriend", "бывший boyfriend")]}},
+            {"response": {"cards": [card("bug", "ошибка"), card("commit", "закоммитить")]}},
+        )
+        result = asyncio.run(generator.generate(ai, "B1", 3, "программирование"))
+        self.assertEqual([c["en"] for c in result], ["bug", "deploy", "commit"])
+        second_prompt = ai.calls[1][1]
+        self.assertEqual(second_prompt["messages"][1]["content"], "Generate 1 cards.")
+        self.assertIn("bug, deploy", second_prompt["messages"][0]["content"])
+
+    def test_generate_gives_up_after_three_requests(self):
+        ai = FakeAI(*[{"response": {"cards": [card("кот", "cat")]}}] * 5)
+        self.assertEqual(asyncio.run(generator.generate(ai, "B1", 2)), [])
+        self.assertEqual(len(ai.calls), 3)
+
+    def test_terms_from_english_are_allowed_in_russian_examples(self):
+        raw = card("script", "скрипт", examples=(
+            ("I wrote a script in Python.", "Я написал скрипт на Python."),
+            ("Call the API from the script.", "Вызови API из скрипта."),
+            ("The app crashed.", "Приложение crashedнуло."),
+            ("She is my boyfriend.", "Она мой boyfriend."),
+        ))
+        parsed = generator.parse_cards({"response": {"cards": [raw]}})[0]
+        self.assertEqual([e["ru"] for e in parsed["examples"]], ["Я написал скрипт на Python.", "Вызови API из скрипта."])
+        # the word's own translation stays strict
+        self.assertEqual(generator.parse_cards({"response": {"cards": [card("python", "язык Python")]}}), [])
+
     def test_generate_retries_once(self):
         ai = FakeAI({"response": "nothing"}, {"response": {"cards": [card("chill", "отдыхать")]}})
         result = asyncio.run(generator.generate(ai, "B1", 1))
@@ -233,6 +261,14 @@ class InboxFlowTest(unittest.TestCase):
         self.press("cancel")
         self.assertEqual(self.key("state"), {})
         self.assertEqual(self.tg.last_text(), "Отменено.")
+
+    def test_partial_generation_is_reported(self):
+        self.msg("/start")
+        self.ai.responses += [{"response": {"cards": [card("chill", "отдыхать")]}}] + [{"response": {"cards": []}}] * 2
+        self.msg("/gen 3")
+        texts = [p["text"] for p in self.tg.sent()[-3:]]
+        self.assertTrue(any("Получилось 1 из 3" in t for t in texts))
+        self.assertEqual(len(self.key("inbox")), 1)
 
     def test_generation_failure(self):
         self.msg("/start")

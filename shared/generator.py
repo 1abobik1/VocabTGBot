@@ -78,8 +78,10 @@ RESPONSE_SCHEMA = {
 }
 
 _CYRILLIC = re.compile("[а-яё]", re.IGNORECASE)
-# English leaking into the Russian side ("бывший boyfriend"); short abbreviations like "IT" are fine.
+# English leaking into the Russian side ("бывший boyfriend", "crashedнуло"). Short abbreviations
+# ("IT") are fine, and so are names and terms copied from the English side ("Python", "API").
 _LATIN_WORD = re.compile("[A-Za-z]{3,}")
+_LATIN_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9+#.]*")
 # Anything outside Latin, Cyrillic, digits, whitespace and common punctuation (e.g. a stray "细节").
 _FOREIGN = re.compile(r"[^\sA-Za-zА-Яа-яЁё0-9.,!?;:'\"()\-–—’‘“”«»…/&%$€£+]")
 
@@ -124,11 +126,29 @@ def _clean(text):
     return " ".join(str(text or "").split())
 
 
-def _clean_pair(item):
+def _has_english_leak(ru, en):
+    """Latin words in Russian text, except capitalised names/terms that also appear in the English text."""
+    en_tokens = set(_LATIN_TOKEN.findall(en))
+    for match in _LATIN_TOKEN.finditer(ru):
+        token = match.group()
+        glued = match.start() > 0 and _CYRILLIC.match(ru[match.start() - 1]) or (
+            match.end() < len(ru) and _CYRILLIC.match(ru[match.end()])
+        )
+        if glued:
+            return True  # "crashedнуло"
+        if _LATIN_WORD.search(token) and not (token[0].isupper() and token in en_tokens):
+            return True
+    return False
+
+
+def _clean_pair(item, main=False):
+    """A valid {"en", "ru"} pair or None. `main` (the card's word itself) allows no Latin in Russian."""
     if not isinstance(item, dict):
         return None
     en, ru = _clean(item.get("en")), _clean(item.get("ru"))
-    if not en or not ru or _CYRILLIC.search(en) or not _CYRILLIC.search(ru) or _LATIN_WORD.search(ru):
+    if not en or not ru or _CYRILLIC.search(en) or not _CYRILLIC.search(ru):
+        return None
+    if (_LATIN_WORD.search(ru) if main else _has_english_leak(ru, en)):
         return None
     if _FOREIGN.search(en) or _FOREIGN.search(ru):
         return None
@@ -140,14 +160,17 @@ def parse_cards(output, existing=(), limit=MAX_CARDS):
     seen = {w.compact(x) for x in existing}
     cards = []
     for raw in _response_payload(output).get("cards") or []:
-        pair = _clean_pair(raw)
+        pair = _clean_pair(raw, main=True)
         if pair is None:
+            print(f"generator: dropped malformed card {raw!r}")
             continue
         en = re.sub(r"^to\s+", "", pair["en"], flags=re.IGNORECASE)
         if w.compact(en) in seen:
+            print(f"generator: dropped duplicate {en!r}")
             continue
         examples = [p for p in map(_clean_pair, raw.get("examples") or []) if p][:2]
         if not examples:
+            print(f"generator: dropped card without valid examples {raw!r}")
             continue  # a card without an example is not worth keeping
         synonyms = [p for p in map(_clean_pair, raw.get("synonyms") or []) if p][:2]
         seen.add(w.compact(en))
@@ -157,12 +180,19 @@ def parse_cards(output, existing=(), limit=MAX_CARDS):
     return cards
 
 
+# Requests per generation: the first one plus top-ups for cards the validation dropped.
+MAX_ATTEMPTS = 3
+
+
 async def generate(ai, level, count, topic=None, existing=(), model=DEFAULT_MODEL):
-    """Ask the model for `count` cards; one retry if nothing usable came back."""
+    """Ask the model for `count` cards; if some are dropped, ask again for the missing ones."""
     count = max(1, min(int(count), MAX_CARDS))
-    for _ in range(2):
-        output = await ai.run(model, build_input(level, count, topic, existing))
-        cards = parse_cards(output, existing, limit=count)
-        if cards:
-            return cards
-    return []
+    cards = []
+    for _ in range(MAX_ATTEMPTS):
+        missing = count - len(cards)
+        if missing <= 0:
+            break
+        known = list(existing) + [c["en"] for c in cards]
+        output = await ai.run(model, build_input(level, missing, topic, known))
+        cards += parse_cards(output, known, limit=missing)
+    return cards

@@ -546,6 +546,10 @@ class Bot:
                 card["topic"] = topic
         inbox += new_cards
         await self.repo.put(inbox_key(username), inbox)
+        if not auto and len(new_cards) < count:
+            await self.send(
+                chat_id, f"Получилось {len(new_cards)} из {count}: остальные ИИ сделал с ошибками. Можно сгенерировать ещё."
+            )
         if auto:
             await self.send(chat_id, "🤖 Очередь пуста — ИИ подобрал новую карточку. Проверь её:")
         await self.send_inbox_card(username, chat_id, inbox)
