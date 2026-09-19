@@ -109,14 +109,27 @@ class Bot:
         self.schedule = schedule
         self.ai = ai
         self.ai_model = ai_model or generator.DEFAULT_MODEL
+        # Chat whose reply keyboard is outdated: the next plain reply carries the new one.
+        self._keyboard_refresh_chat = self._keyboard_refresh_user = None
 
     # ---- sending helpers -------------------------------------------------
 
     async def send(self, chat_id, text, reply_markup=None):
+        if reply_markup is None and chat_id == self._keyboard_refresh_chat:
+            reply_markup = cards.main_keyboard()
+        if reply_markup == cards.main_keyboard() and chat_id == self._keyboard_refresh_chat:
+            self._keyboard_refresh_chat = None
+            await self._remember_keyboard(chat_id)
         payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
         return await self.tg.call("sendMessage", payload)
+
+    async def _remember_keyboard(self, chat_id):
+        username = self._keyboard_refresh_user
+        settings = await self.repo.get(settings_key(username), {})
+        settings["keyboard"] = cards.KEYBOARD_VERSION
+        await self.repo.put(settings_key(username), settings)
 
     async def send_card(self, username, chat_id):
         """Send queue[0] to the user and bump its shown_count. Returns the word or None."""
@@ -246,6 +259,9 @@ class Bot:
             user["chat_id"] = chat["id"]
             await self.repo.put(ALLOWED_USERS_KEY, users)
         username = normalize_username(user["username"])
+        settings = await self.repo.get(settings_key(username), {})
+        if settings.get("keyboard") != cards.KEYBOARD_VERSION:
+            self._keyboard_refresh_chat, self._keyboard_refresh_user = chat["id"], username
 
         if "callback_query" in update:
             await self._on_callback(update["callback_query"], username, chat["id"])
@@ -255,6 +271,13 @@ class Bot:
     async def _on_callback(self, query, username, chat_id):
         data = query.get("data") or ""
         message_id = (query.get("message") or {}).get("message_id")
+        if data == "cancel":
+            await self.tg.call("answerCallbackQuery", {"callback_query_id": query["id"]})
+            if message_id is not None:
+                await self._drop_buttons(chat_id, message_id)
+            await self.repo.put(state_key(username), {})
+            await self.send(chat_id, "Отменено.", cards.main_keyboard())
+            return
         if data == "menu":
             await self.repo.put(state_key(username), {})
             await self.tg.call("answerCallbackQuery", {"callback_query_id": query["id"]})
@@ -280,7 +303,7 @@ class Bot:
             elif prefix == "ie":
                 await self._inbox_edit_start(username, chat_id, value)
             elif prefix == "lv":
-                await self._set_level(username, chat_id, value)
+                await self._set_level(username, chat_id, value, menu_message_id=message_id)
             elif value.isdigit():
                 await self.generate_to_inbox(username, chat_id, int(value))
             return
@@ -330,8 +353,9 @@ class Bot:
         if not text:
             return
         command = text.split()[0].split("@")[0].lower() if text.startswith("/") else None
+        text = cards.LEGACY_BUTTONS.get(text, text)
 
-        if command in ("/start", "/help"):
+        if command in ("/start", "/help") or text == cards.HELP_BUTTON:
             await self.send(chat_id, cards.HELP_TEXT, cards.main_keyboard())
         elif command == "/allow":
             await self._allow(text, user, users, chat_id)
@@ -340,7 +364,7 @@ class Bot:
                 await self.send(chat_id, "Очередь пуста — добавь новое слово.")
         elif command == "/review" or text == cards.REVIEW_BUTTON:
             await self._start_review(username, chat_id)
-        elif command == "/stats":
+        elif command == "/stats" or text == cards.STATS_BUTTON:
             await self.send_stats(username, chat_id)
         elif command == "/gen" or text == cards.GENERATE_BUTTON:
             await self._gen_command(username, chat_id, text if command else "")
@@ -349,9 +373,8 @@ class Bot:
             if len(parts) > 1:
                 await self._set_level(username, chat_id, parts[1])
             else:
-                level = await self._level(username)
-                await self.send(chat_id, f"Текущий уровень: <b>{level}</b>. Выбери новый:", cards.level_keyboard(level))
-        elif command == "/practice":
+                await self._gen_command(username, chat_id, "")
+        elif command == "/practice" or text == cards.PRACTICE_BUTTON:
             if not await self.start_practice(username, chat_id):
                 await self.send(chat_id, "Для практики пока нет слов: они появятся после «Знаю» в обе стороны.")
         elif command == "/cancel":
@@ -398,7 +421,7 @@ class Bot:
         known = await self.repo.get(known_key(username), [])
         duplicate = w.find_duplicate(en, ru, queue, known)
         if duplicate:
-            where = "уже в архиве (верни через «Повторить слова»)" if duplicate in known else "уже в очереди"
+            where = f"уже в архиве (верни через «{cards.REVIEW_BUTTON}»)" if duplicate in known else "уже в очереди"
             pair = f"{escape(duplicate['en'])} — {escape(duplicate['ru'])}"
             await self.send(chat_id, f"Не добавил: «{pair}» {where}.")
             return
@@ -413,7 +436,9 @@ class Bot:
     async def _start_review(self, username, chat_id):
         known = w.known_newest_first(await self.repo.get(known_key(username), []))
         if not known:
-            await self.send(chat_id, "Архив пока пуст — выученных слов нет.", cards.menu_inline_keyboard())
+            await self.send(
+                chat_id, "Архив пока пуст — выученных слов нет.\n\n" + cards.ARCHIVE_PATH, cards.menu_inline_keyboard()
+            )
             return
         await self.repo.put(state_key(username), {"mode": "review", "ids": [x["id"] for x in known]})
         chunks = cards.chunk_lines(cards.render_review_lines(known), header="📚 <b>Выученные слова</b> (новые сверху)")
@@ -421,7 +446,10 @@ class Bot:
             await self.send(chat_id, chunk)
         await self.send(
             chat_id,
-            chunks[-1] + "\n\nПришли номера забытых слов через пробел, например: <code>2 5 7</code>",
+            chunks[-1]
+            + "\n\n"
+            + cards.ARCHIVE_PATH
+            + "\n\nПришли номера забытых слов через пробел, например: <code>2 5 7</code>",
             cards.menu_inline_keyboard(),
         )
 
@@ -448,7 +476,8 @@ class Bot:
         settings = await self.repo.get(settings_key(username), {})
         return settings.get("level") or generator.DEFAULT_LEVEL
 
-    async def _set_level(self, username, chat_id, value):
+    async def _set_level(self, username, chat_id, value, menu_message_id=None):
+        """Save the level; from the generation menu the menu itself is updated in place."""
         level = generator.normalize_level(value)
         if level is None:
             await self.send(chat_id, "Уровень: A1, A2, B1, B2 или C1. Например: /level B2")
@@ -456,19 +485,26 @@ class Bot:
         settings = await self.repo.get(settings_key(username), {})
         settings["level"] = level
         await self.repo.put(settings_key(username), settings)
-        await self.send(chat_id, f"Уровень для генерации: <b>{level}</b>")
+        if menu_message_id is not None:
+            await self.tg.call(
+                "editMessageText",
+                {
+                    "chat_id": chat_id,
+                    "message_id": menu_message_id,
+                    "text": cards.render_generate_menu(level),
+                    "parse_mode": "HTML",
+                    "reply_markup": cards.generate_keyboard(level),
+                },
+            )
+        else:
+            await self.send(chat_id, f"Уровень для генерации: <b>{level}</b>")
 
     async def _gen_command(self, username, chat_id, text):
         """/gen [count] [level] [topic in free words]"""
         args = text.split()[1:]
         if not args:
             level = await self._level(username)
-            await self.send(
-                chat_id,
-                f"Сколько карточек сгенерировать? Уровень: <b>{level}</b> (сменить: /level).\n"
-                "С темой: <code>/gen 5 путешествия</code>, с уровнем: <code>/gen 3 C1 работа в офисе</code>",
-                cards.generate_keyboard(),
-            )
+            await self.send(chat_id, cards.render_generate_menu(level), cards.generate_keyboard(level))
             return
         count = 5
         if args and args[0].isdigit():
@@ -570,8 +606,9 @@ class Bot:
         await self.repo.put(state_key(username), {"mode": "edit", "id": word_id})
         await self.send(
             chat_id,
-            "✏️ Скопируй текст (нажми на него), исправь и пришли одним сообщением. /cancel — отмена.\n\n"
+            "✏️ Скопируй текст (нажми на него), исправь и пришли одним сообщением.\n\n"
             f"<code>{escape(w.card_to_text(inbox[index]))}</code>",
+            cards.cancel_keyboard(),
         )
 
     async def _inbox_edit_finish(self, username, chat_id, state, text):

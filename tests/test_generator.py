@@ -190,27 +190,49 @@ class InboxFlowTest(unittest.TestCase):
         self.assertEqual(self.key("state"), {})
         self.assertEqual(self.key("queue"), None)
 
-    def test_level_setting_and_defaults(self):
+    def test_level_is_changed_inside_the_generation_menu(self):
         self.msg("/start")
-        self.msg("/level")
-        self.assertIn("Текущий уровень: <b>B1</b>", self.tg.last_text())
-        self.press("lv:B2")
-        self.assertEqual(self.key("settings"), {"level": "B2"})
-        self.msg("/level c1")
-        self.assertEqual(self.key("settings"), {"level": "C1"})
-        self.msg("/level Z9")
-        self.assertIn("A1, A2, B1, B2 или C1", self.tg.last_text())
+        self.msg(cards.GENERATE_BUTTON)
+        menu = self.tg.sent()[-1]
+        self.assertIn("Уровень: <b>B1</b>", menu["text"])
+        self.assertEqual(menu["reply_markup"], cards.generate_keyboard("B1"))
+        self.assertIn({"text": "• B1 •", "callback_data": "lv:B1"}, menu["reply_markup"]["inline_keyboard"][1])
+
+        self.press("lv:C1")
+        self.assertEqual(self.key("settings")["level"], "C1")
+        method, payload = self.tg.calls[-1]
+        self.assertEqual((method, payload["message_id"]), ("editMessageText", 50))
+        self.assertIn("Уровень: <b>C1</b>", payload["text"])
+        self.assertEqual(payload["reply_markup"], cards.generate_keyboard("C1"))
+
         self.ai.responses.append({"response": {"cards": [card("chill", "отдыхать")]}})
         self.press("gen:1")
         self.assertIn("CEFR level C1", self.ai.calls[-1][1]["messages"][0]["content"])
 
-    def test_gen_button_and_limits(self):
+    def test_level_command_still_works(self):
         self.msg("/start")
-        self.msg(cards.GENERATE_BUTTON)
-        self.assertEqual(self.tg.sent()[-1]["reply_markup"], cards.generate_keyboard())
+        self.msg("/level b2")
+        self.assertEqual(self.key("settings")["level"], "B2")
+        self.msg("/level")
+        self.assertEqual(self.tg.sent()[-1]["reply_markup"], cards.generate_keyboard("B2"))
+        self.msg("/level Z9")
+        self.assertIn("A1, A2, B1, B2 или C1", self.tg.last_text())
+
+    def test_gen_limits(self):
+        self.msg("/start")
         self.msg("/gen 50")
         self.assertIn("от 1 до 10", self.tg.last_text())
         self.assertEqual(self.ai.calls, [])
+
+    def test_edit_cancel_button(self):
+        self.msg("/start")
+        self.ai.responses.append({"response": {"cards": [card("chill", "отдыхать")]}})
+        self.msg("/gen 1")
+        self.press(self.inbox_buttons()["✏️ Исправить"])
+        self.assertEqual(self.tg.sent()[-1]["reply_markup"], cards.cancel_keyboard())
+        self.press("cancel")
+        self.assertEqual(self.key("state"), {})
+        self.assertEqual(self.tg.last_text(), "Отменено.")
 
     def test_generation_failure(self):
         self.msg("/start")

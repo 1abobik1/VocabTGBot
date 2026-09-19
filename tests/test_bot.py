@@ -243,6 +243,7 @@ class BotTest(unittest.TestCase):
         listing = self.tg.sent()[-1]
         order = [w["en"] for w in sorted(self.known(), key=lambda w: w["archived_at"], reverse=True)]
         self.assertIn(f"1) {order[0]}", listing["text"])
+        self.assertIn(cards.ARCHIVE_PATH, listing["text"])
         self.assertEqual(listing["reply_markup"], cards.menu_inline_keyboard())
 
         self.msg("1 3 9")
@@ -258,6 +259,7 @@ class BotTest(unittest.TestCase):
     def test_menu_leaves_review_mode(self):
         self.msg("/review")
         self.assertIn("Архив пока пуст", self.tg.last_text())
+        self.assertIn(cards.ARCHIVE_PATH, self.tg.last_text())
         self.press("menu")
         self.assertEqual(self.store.json(f"state:{OWNER.lower()}"), {})
         self.assertIn("Режим добавления слов", self.tg.last_text())
@@ -299,6 +301,38 @@ class BotTest(unittest.TestCase):
         text = self.tg.last_text()
         self.assertIn("Выучено слов: <b>1</b>", text)
         self.assertIn("0.0 дн.", text)
+
+    def test_menu_buttons(self):
+        self.msg("/start")
+        self.msg(cards.HELP_BUTTON)
+        help_text = self.tg.last_text()
+        for button in (cards.NEXT_BUTTON, cards.REVIEW_BUTTON, cards.GENERATE_BUTTON, cards.PRACTICE_BUTTON, cards.STATS_BUTTON):
+            self.assertIn(button, help_text)
+        self.assertNotIn("/allow", str(cards.main_keyboard()))
+        self.msg(cards.STATS_BUTTON)
+        self.assertIn("Статистика за неделю", self.tg.last_text())
+        self.msg(cards.PRACTICE_BUTTON)
+        self.assertIn("пока нет слов", self.tg.last_text())
+        self.msg(cards.REVIEW_BUTTON)
+        self.assertIn("Архив пока пуст", self.tg.last_text())
+        self.msg(cards.NEXT_BUTTON)
+        self.assertIn("Очередь пуста", self.tg.last_text())
+
+    def test_old_keyboard_buttons_still_work(self):
+        self.msg("/start")
+        self.msg("Повторить слова")
+        self.assertIn("Архив пока пуст", self.tg.last_text())
+        self.msg("Карточка сейчас")
+        self.assertIn("Очередь пуста", self.tg.last_text())
+
+    def test_outdated_keyboard_is_replaced_once(self):
+        # a user who got the old keyboard before this version
+        run(self.store.put("allowed_users", json.dumps([{"username": OWNER, "role": "owner", "chat_id": CHAT}])))
+        self.msg("cat - кот")
+        self.assertEqual(self.tg.sent()[-1]["reply_markup"], cards.main_keyboard())
+        self.assertEqual(self.store.json(f"settings:{OWNER.lower()}"), {"keyboard": cards.KEYBOARD_VERSION})
+        self.msg("dog - собака")
+        self.assertNotIn("reply_markup", self.tg.sent()[-1])
 
     def test_unknown_command(self):
         self.msg("/foo")

@@ -7,32 +7,49 @@ from .words import current_example
 
 KNOWN_BUTTON = "Знаю"
 UNKNOWN_BUTTON = "Не знаю"
-REVIEW_BUTTON = "Повторить слова"
-NEXT_BUTTON = "Карточка сейчас"
-GENERATE_BUTTON = "🤖 Сгенерировать"
+NEXT_BUTTON = "🃏 Карточка сейчас"
+REVIEW_BUTTON = "🔁 Повтор архивных слов"
+GENERATE_BUTTON = "🤖 AI-Генерация"
+PRACTICE_BUTTON = "🧠 Практика"
+STATS_BUTTON = "📊 Статистика"
+HELP_BUTTON = "❓ Помощь"
 MENU_BUTTON = "Меню"
+CANCEL_BUTTON = "Отмена"
+# Texts of older keyboards still on users' screens until the new one arrives.
+LEGACY_BUTTONS = {"Карточка сейчас": NEXT_BUTTON, "Повторить слова": REVIEW_BUTTON, "🤖 Сгенерировать": GENERATE_BUTTON}
+# Bump when main_keyboard() changes: every user gets the new keyboard with their next reply.
+KEYBOARD_VERSION = 2
+
+ARCHIVE_PATH = (
+    "Как слово попадает в архив:\n"
+    "1. «Знаю» на карточке RU→EN\n"
+    "2. «Знаю» на карточке EN→RU\n"
+    f"3. Верно написать его на практике (по субботам в 9:00 или кнопка «{PRACTICE_BUTTON}»)"
+)
 
 HELP_TEXT = (
-    "Пришли слово одним сообщением:\n"
+    "<b>Как добавить слово</b> — пришли одним сообщением:\n"
     "<code>apple - яблоко\n"
-    "I ate an apple. - Я съел яблоко.</code>\n\n"
-    "Первая строка — слово и перевод, остальные (необязательно) — примеры. "
-    "Синонимы — строкой <code>Синонимы: fairly - довольно; rather - скорее</code>. "
-    "Разделитель — « - » или « — » с пробелами (дефис внутри слова, как в «куда-то», можно). "
-    "Порядок языков любой: «куда-то - somewhere» тоже сработает.\n\n"
-    "Карточки приходят по расписанию. Кнопки:\n"
-    f"• «{REVIEW_BUTTON}» — список выученных слов, можно вернуть забытые в очередь\n"
-    f"• «{NEXT_BUTTON}» — получить карточку прямо сейчас\n"
-    f"• «{GENERATE_BUTTON}» — новые карточки от ИИ\n\n"
-    "<b>Генерация:</b> <code>/gen 5</code> — 5 карточек твоего уровня, "
-    "<code>/gen 3 B2 путешествия</code> — уровень и тема своими словами. "
-    "Уровень по умолчанию — /level. Карточки приходят по одной на проверку: "
-    "«В очередь», «Исправить» или «Удалить». Если очередь пуста, за 20 минут до слота "
-    "ИИ сам предложит новую карточку.\n\n"
-    "<b>Практика:</b> слово, на которое ответили «Знаю» в обе стороны, ждёт субботней практики "
-    "(9:00): его надо написать RU→EN и EN→RU. Верно — в архив, опечатка — повтор, ошибка — "
-    "учим заново. Пока практика не пройдена, новые карточки не приходят. /practice — начать сейчас.\n\n"
-    "Команды: /next, /review, /stats, /gen, /level, /practice, /cancel, /allow @username (только владелец)"
+    "I ate an apple. - Я съел яблоко.\n"
+    "Синонимы: fruit - фрукт</code>\n"
+    "Первая строка — слово и перевод, дальше по желанию примеры и синонимы. Разделитель « - » или « — » "
+    "с пробелами, порядок языков любой.\n\n"
+    "<b>Кнопки</b>\n"
+    f"{NEXT_BUTTON} — следующая карточка из очереди прямо сейчас, не дожидаясь расписания. "
+    "Если на прошлую карточку ещё нет ответа, пришлёт её повторно.\n\n"
+    f"{REVIEW_BUTTON} — список выученных слов, новые сверху. Пришли номера забытых "
+    "(например <code>2 5 7</code>) — они вернутся в очередь и пройдут весь путь заново.\n\n"
+    f"{GENERATE_BUTTON} — ИИ подберёт новые карточки: выбери уровень A1–C1 и количество. "
+    "С темой — командой <code>/gen 5 путешествия</code>. Карточки приходят по одной на проверку: "
+    "«В очередь», «Исправить» или «Удалить». Если очередь пуста, ИИ сам предложит слово "
+    "за 20 минут до карточки по расписанию.\n\n"
+    f"{PRACTICE_BUTTON} — написать слова, на которые ответил «Знаю» в обе стороны: сначала по-английски, "
+    "потом по-русски, потом по желанию предложения. Верно — в архив, опечатка — ещё одна карточка, "
+    "ошибка — слово учится заново. Сама запускается по субботам в 9:00.\n\n"
+    f"{STATS_BUTTON} — сколько слов выучено за неделю, сколько в очереди и ждут практики.\n\n"
+    "<b>Расписание</b>: 10 карточек в день с 10:00 до 23:00. Пока на карточку или практику нет ответа, "
+    "новые не приходят, а после ответа приходят все пропущенные.\n\n"
+    + ARCHIVE_PATH
 )
 
 
@@ -102,23 +119,29 @@ def inbox_keyboard(word):
     }
 
 
-def level_keyboard(current):
-    return {
-        "inline_keyboard": [
-            [
-                {"text": f"• {level} •" if level == current else level, "callback_data": f"lv:{level}"}
-                for level in ("A1", "A2", "B1", "B2", "C1")
-            ]
-        ]
-    }
+def render_generate_menu(level):
+    return (
+        f"{GENERATE_BUTTON}\n\n"
+        f"Уровень: <b>{level}</b> — сменить можно кнопками ниже.\n"
+        "Сколько карточек сгенерировать?\n\n"
+        "С темой своими словами: <code>/gen 5 путешествия</code> или <code>/gen 3 C1 работа в офисе</code>"
+    )
 
 
-def generate_keyboard():
+def generate_keyboard(level):
     return {
         "inline_keyboard": [
             [{"text": f"{n} шт.", "callback_data": f"gen:{n}"} for n in (1, 3, 5, 10)],
+            [
+                {"text": f"• {lv} •" if lv == level else lv, "callback_data": f"lv:{lv}"}
+                for lv in ("A1", "A2", "B1", "B2", "C1")
+            ],
         ]
     }
+
+
+def cancel_keyboard():
+    return {"inline_keyboard": [[{"text": CANCEL_BUTTON, "callback_data": "cancel"}]]}
 
 
 def card_keyboard(word):
@@ -137,7 +160,11 @@ def card_keyboard(word):
 
 def main_keyboard():
     return {
-        "keyboard": [[{"text": REVIEW_BUTTON}, {"text": NEXT_BUTTON}], [{"text": GENERATE_BUTTON}]],
+        "keyboard": [
+            [{"text": NEXT_BUTTON}, {"text": REVIEW_BUTTON}],
+            [{"text": GENERATE_BUTTON}, {"text": PRACTICE_BUTTON}],
+            [{"text": STATS_BUTTON}, {"text": HELP_BUTTON}],
+        ],
         "resize_keyboard": True,
         "is_persistent": True,
     }

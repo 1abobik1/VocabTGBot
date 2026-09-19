@@ -28,7 +28,6 @@ async def main(url):
                 {"command": "next", "description": "Карточка прямо сейчас"},
                 {"command": "review", "description": "Повторить выученные слова"},
                 {"command": "gen", "description": "Сгенерировать карточки ИИ: /gen 5 B2 тема"},
-                {"command": "level", "description": "Уровень для генерации (A1–C1)"},
                 {"command": "practice", "description": "Практика: написать выученные слова"},
                 {"command": "stats", "description": "Статистика за неделю"},
                 {"command": "help", "description": "Как добавлять слова"},
