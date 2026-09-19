@@ -48,6 +48,18 @@ class ParseTest(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(w.ParseError):
                 w.parse_add_message(text)
 
+    def test_duplicates_ignore_whitespace_case_and_order(self):
+        existing = w.new_word("look up", "искать")
+        queue, known = [existing], []
+        for text in ["look up - искать", "lookup - искать", "  Look   Up  -  Искать ", "искать - look up"]:
+            en, ru, _ = w.parse_add_message(text)
+            self.assertIs(w.find_duplicate(en, ru, queue, known), existing, text)
+        # same English word with another meaning is a different card
+        self.assertIsNone(w.find_duplicate("look up", "посмотреть наверх", queue, known))
+        self.assertIsNone(w.find_duplicate("look out", "искать", queue, known))
+        # archived words count too
+        self.assertIs(w.find_duplicate("lookup", "искать", [], [existing]), existing)
+
     def test_numbers(self):
         self.assertEqual(w.parse_numbers("2 5 7"), [2, 5, 7])
         self.assertEqual(w.parse_numbers("2, 5"), [2, 5])

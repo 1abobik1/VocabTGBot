@@ -234,10 +234,11 @@ class Bot:
             return
         queue = await self.repo.get(queue_key(username), [])
         known = await self.repo.get(known_key(username), [])
-        duplicate = w.find_duplicate(en, queue, known)
+        duplicate = w.find_duplicate(en, ru, queue, known)
         if duplicate:
-            where = "в архиве (верни через «Повторить слова»)" if duplicate in known else "уже в очереди"
-            await self.send(chat_id, f"Слово «{escape(duplicate['en'])}» {where}.")
+            where = "уже в архиве (верни через «Повторить слова»)" if duplicate in known else "уже в очереди"
+            pair = f"{escape(duplicate['en'])} — {escape(duplicate['ru'])}"
+            await self.send(chat_id, f"Не добавил: «{pair}» {where}.")
             return
         queue.append(w.new_word(en, ru, examples))
         await self.repo.put(queue_key(username), queue)

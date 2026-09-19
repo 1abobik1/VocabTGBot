@@ -130,6 +130,8 @@ class BotTest(unittest.TestCase):
         self.assertIn("Добавлено", self.tg.last_text())
         self.msg("Apple - яблоко")
         self.assertIn("уже в очереди", self.tg.last_text())
+        self.msg("яблоко  -  a p p l e")
+        self.assertEqual(self.tg.last_text(), "Не добавил: «apple — яблоко» уже в очереди.")
         self.msg("just text")
         self.assertIn("⚠️", self.tg.last_text())
         self.assertEqual(len(self.queue()), 1)

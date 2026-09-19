@@ -76,10 +76,16 @@ def new_word(en, ru, examples=None):
     }
 
 
-def find_duplicate(en, queue, known):
-    key = en.strip().lower()
+def _compact(text):
+    """Drop all whitespace and ignore case: "Look  up" == "lookup"."""
+    return "".join(text.split()).casefold()
+
+
+def find_duplicate(en, ru, queue, known):
+    """Return an existing word with the same pair, compared without whitespace."""
+    key = (_compact(en), _compact(ru))
     for word in list(queue) + list(known):
-        if word["en"].strip().lower() == key:
+        if (_compact(word["en"]), _compact(word["ru"])) == key:
             return word
     return None
 
