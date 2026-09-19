@@ -1,7 +1,7 @@
 """Telegram message texts (HTML parse_mode) and keyboards."""
 
 import random
-from html import escape
+from html import escape as _html_escape
 
 from .words import current_example
 
@@ -26,12 +26,18 @@ HELP_TEXT = (
     "<code>apple - яблоко\n"
     "I ate an apple. - Я съел яблоко.</code>\n\n"
     "Первая строка — слово и перевод, остальные (необязательно) — примеры. "
-    "Разделитель — « - ».\n\n"
+    "Разделитель — « - » с пробелами (дефис внутри слова, как в «куда-то», можно). "
+    "Порядок языков любой: «куда-то - somewhere» тоже сработает.\n\n"
     "Карточки приходят по расписанию. Кнопки:\n"
     f"• «{REVIEW_BUTTON}» — список выученных слов, можно вернуть забытые в очередь\n"
     f"• «{NEXT_BUTTON}» — получить карточку прямо сейчас\n\n"
     "Команды: /next, /review, /stats, /allow @username (только владелец)"
 )
+
+
+def escape(text):
+    # Quotes need no escaping outside attributes; keeps "He's" readable in the payload.
+    return _html_escape(text, quote=False)
 
 
 def _capitalize(text):

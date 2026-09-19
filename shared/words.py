@@ -4,6 +4,7 @@ Pure functions over plain dicts/lists so the same code runs inside the
 Cloudflare Worker (Pyodide) and in GitHub Actions (CPython).
 """
 
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -24,16 +25,26 @@ class ParseError(ValueError):
     pass
 
 
+_CYRILLIC = re.compile("[а-яё]", re.IGNORECASE)
+
+
 def _split_pair(line):
+    """Split "en - ru" (or "ru - en") on the first separator and return (en, ru).
+
+    Hyphens inside words ("куда-то", "well-being") are kept: the separator needs spaces
+    around it. Sides are swapped when only the left one is Cyrillic, so either order works.
+    """
     left, sep, right = line.partition(SEPARATOR)
     left, right = left.strip(), right.strip()
     if not sep or not left or not right:
         return None
+    if _CYRILLIC.search(left) and not _CYRILLIC.search(right):
+        return right, left
     return left, right
 
 
 def parse_add_message(text):
-    """Parse "en - ru" on the first line plus optional "example en - example ru" lines.
+    """Parse "en - ru" on the first line plus optional "example en - example ru" lines (any order).
 
     Returns (en, ru, examples). Raises ParseError with a human-readable message.
     """

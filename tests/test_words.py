@@ -30,6 +30,16 @@ class ParseTest(unittest.TestCase):
         en, ru, _ = w.parse_add_message("well-being - благо - получие")
         self.assertEqual((en, ru), ("well-being", "благо - получие"))
 
+    def test_hyphenated_words_and_russian_first(self):
+        en, ru, examples = w.parse_add_message(
+            "Куда-то - somewhere\nСмотри! Он куда-то бежит. - Look! He's running somewhere"
+        )
+        self.assertEqual((en, ru), ("somewhere", "Куда-то"))
+        self.assertEqual(examples, [{"en": "Look! He's running somewhere", "ru": "Смотри! Он куда-то бежит."}])
+        # mixed order between lines is fine too
+        _, _, examples = w.parse_add_message("well-being - благополучие\nЭто важно - It matters")
+        self.assertEqual(examples, [{"en": "It matters", "ru": "Это важно"}])
+
     def test_word_without_examples(self):
         self.assertEqual(w.parse_add_message("cat - кот"), ("cat", "кот", []))
 

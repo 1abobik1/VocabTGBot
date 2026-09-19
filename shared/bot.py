@@ -5,9 +5,9 @@
 """
 
 import json
-from html import escape
 
 from . import cards
+from .cards import escape
 from . import words as w
 
 ALLOWED_USERS_KEY = "allowed_users"

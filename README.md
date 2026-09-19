@@ -61,7 +61,9 @@ tests/           unit- и сценарные тесты (python -m unittest)
 ## Как пользоваться
 
 Добавить слово — одно сообщение: первая строка — слово и перевод, дальше по желанию примеры.
-Разделитель — ` - ` (учитывается первое вхождение в строке).
+Разделитель — ` - ` с пробелами по бокам (учитывается первое вхождение в строке), поэтому
+дефис внутри слова (`куда-то`, `well-being`) не мешает. Порядок языков в строке любой: язык
+определяется по кириллице, так что `Куда-то - somewhere` тоже сработает.
 
 ```
 apple - яблоко
@@ -80,55 +82,6 @@ An apple a day... - Одно яблоко в день...
 
 Следующая карточка приходит по расписанию, а не сразу после ответа: задумано, что слова
 приходят понемногу в течение дня.
-
-## ⚠️ Репозиторий публичный — что нельзя коммитить
-
-**Никогда** не коммить:
-
-- `TELEGRAM_BOT_TOKEN`
-- `CLOUDFLARE_API_TOKEN`
-- `CLOUDFLARE_ACCOUNT_ID`
-- `TELEGRAM_WEBHOOK_SECRET`
-- `OWNER_USERNAME` — твой Telegram username. Он публичный, но связывать его с репозиторием незачем,
-  поэтому он хранится как секрет Worker, а не в `wrangler.toml`
-- ID KV-namespace. Сам по себе он не секрет, но светить его незачем. Его нет в `wrangler.toml`:
-  `worker/build_config.sh` подставляет его из переменной окружения в `wrangler.deploy.toml`, который в `.gitignore`.
-
-Где хранить секреты:
-
-- **GitHub Actions**: `Settings → Secrets and variables → Actions → New repository secret`.
-- **Cloudflare Worker**: `npx wrangler secret put NAME` (не в `wrangler.toml` и не в коде).
-- **Локально**: `.env` и `worker/.dev.vars` (оба в `.gitignore`). Шаблоны: `.env.example` и `worker/.dev.vars.example`.
-
-Перед первым публичным пушем проверь, что в истории нет токенов:
-
-```sh
-git log -p --all | grep -nE '[0-9]{8,10}:[A-Za-z0-9_-]{35}|cfut_[A-Za-z0-9]{20,}' || echo "tokens not found"
-```
-
-Открыто лежат бизнес-логика, тексты карточек и cron-расписание.
-
-## Настройка с нуля
-
-Нужны: Python 3.12+, Node.js 18+ (для `npx wrangler`), аккаунты Telegram, Cloudflare и GitHub.
-
-### 1. Telegram-бот
-
-1. Напиши [@BotFather](https://t.me/BotFather) → `/newbot` → получи токен.
-2. Придумай секрет для вебхука, например `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`.
-   Telegram будет присылать его в каждом запросе, а Worker — отклонять запросы без него.
-
-### 2. Cloudflare
-
-1. Зарегистрируйся на [dash.cloudflare.com](https://dash.cloudflare.com), зайди в **Workers & Pages** и выбери поддомен `*.workers.dev`.
-2. **Account ID** — в правой колонке на странице Workers & Pages.
-3. Залогинься в wrangler: `npx wrangler@4 login`.
-4. Создай KV namespace и сохрани его `id`:
-   ```sh
-   npx wrangler@4 kv namespace create VOCAB_KV
-   ```
-5. Для GitHub Actions создай отдельный API-токен с минимальными правами:
-   **My Profile → API Tokens → Create Token → Custom token → Permissions: Account · Workers KV Storage · Edit**.
 
 ### 3. Деплой Worker
 
