@@ -149,8 +149,7 @@ class CardTest(unittest.TestCase):
         self.assertEqual(
             cards.render_card(self.word),
             "Яблоко - <tg-spoiler>apple</tg-spoiler>\n\n"
-            "<tg-spoiler>I ate an apple.</tg-spoiler>\nЯ съел яблоко.\n\n"
-            "<i>I learned a new word! / Я выучил новое слово!</i>",
+            "<tg-spoiler>I ate an apple.</tg-spoiler>\nЯ съел яблоко.",
         )
 
     def test_stage1_reversed_with_rotating_example(self):
@@ -162,7 +161,6 @@ class CardTest(unittest.TestCase):
 
     def test_no_examples_and_html_escaping(self):
         word = w.new_word("<b>&", "a<i>")
-        word["shown_count"] = 1
         self.assertEqual(cards.render_card(word), "A&lt;i&gt; - <tg-spoiler>&lt;b&gt;&amp;</tg-spoiler>")
 
     def test_keyboard(self):

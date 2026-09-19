@@ -11,8 +11,6 @@ REVIEW_BUTTON = "Повторить слова"
 NEXT_BUTTON = "Карточка сейчас"
 MENU_BUTTON = "Меню"
 
-NEW_WORD_CAPTION = "I learned a new word! / Я выучил новое слово!"
-
 ARCHIVE_CHEERS = [
     "🎉 «{en}» — в архиве! Так держать!",
     "🏆 Ещё одно слово покорено: «{en}»",
@@ -59,8 +57,6 @@ def render_card(word):
         lines = [f"{escape(_capitalize(word['en']))} - {_spoiler(word['ru'])}"]
         if example:
             lines += ["", escape(example["en"]), _spoiler(example["ru"])]
-    if word.get("shown_count", 0) == 0:
-        lines += ["", f"<i>{escape(NEW_WORD_CAPTION)}</i>"]
     return "\n".join(lines)
 
 

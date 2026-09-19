@@ -140,11 +140,11 @@ class BotTest(unittest.TestCase):
         for word in ["apple - яблоко", "cat - кот", "dog - собака"]:
             self.msg(word)
 
-        # scheduled card: queue[0] = apple, stage 0, first show carries the caption
+        # scheduled card: queue[0] = apple, stage 0
         self.assertEqual(run(self.bot.broadcast_cards()), [OWNER])
         card = self.tg.sent()[-1]
         self.assertTrue(card["text"].startswith("Яблоко - <tg-spoiler>apple</tg-spoiler>"))
-        self.assertIn(cards.NEW_WORD_CAPTION, card["text"])
+        self.assertNotIn("<i>", card["text"])
         self.assertEqual(card["parse_mode"], "HTML")
         apple_id = self.last_card_word()
         self.assertEqual(self.queue()[0]["shown_count"], 1)
