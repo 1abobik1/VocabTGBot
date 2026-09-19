@@ -1,0 +1,16 @@
+# secrets
+.env
+.dev.vars
+*.secret
+
+# generated
+worker/wrangler.deploy.toml
+worker/src/shared/
+worker/.wrangler/
+worker/.venv-workers/
+worker/python_modules/
+worker/pylock.toml
+node_modules/
+__pycache__/
+*.pyc
+.venv/

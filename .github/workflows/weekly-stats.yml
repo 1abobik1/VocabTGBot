@@ -1,0 +1,28 @@
+name: Weekly stats
+
+on:
+  schedule:
+    # Sunday 20:00 MSK = Sunday 17:00 UTC (MSK = UTC+3). Fields: min hour day month weekday(0=Sun).
+    - cron: "0 17 * * 0"
+  workflow_dispatch: {}
+
+concurrency:
+  group: vocab-kv-writer
+  cancel-in-progress: false
+
+jobs:
+  stats:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Send weekly stats to every user
+        run: python scripts/weekly_stats.py
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_KV_NAMESPACE_ID: ${{ secrets.CF_KV_NAMESPACE_ID }}

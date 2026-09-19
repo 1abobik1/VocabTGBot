@@ -1,0 +1,7 @@
+# Copy to worker/.dev.vars for `wrangler dev`. In production use `wrangler secret put NAME`.
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_WEBHOOK_SECRET=
+# your Telegram username without @
+OWNER_USERNAME=
+# Optional: point the Worker at a mock Telegram API for local testing
+# TELEGRAM_API_BASE=http://127.0.0.1:8798

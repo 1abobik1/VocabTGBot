@@ -1,0 +1,22 @@
+name = "vocab-bot"
+main = "src/entry.py"
+compatibility_date = "2026-09-01"
+# disable_python_external_sdk: use the `workers` SDK built into the runtime, so a
+# plain `wrangler deploy` works without `pywrangler sync` vendoring packages.
+compatibility_flags = ["python_workers", "disable_python_external_sdk"]
+
+# shared/ lives at the repo root (it is also used by GitHub Actions); copy it
+# next to entry.py before every dev/deploy so wrangler bundles it.
+[build]
+command = "rm -rf src/shared && cp -r ../shared src/shared && rm -rf src/shared/__pycache__"
+watch_dir = "../shared"
+
+# KV namespace id is kept out of the public repo: `build_config.sh`
+# appends this block from the CF_KV_NAMESPACE_ID env var at deploy time.
+# [[kv_namespaces]]
+# binding = "VOCAB_KV"
+# id = "<your namespace id>"
+
+# Secrets (set with `wrangler secret put NAME`, never commit them):
+#   TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET,
+#   OWNER_USERNAME (Telegram username of the owner, without @; kept private too)

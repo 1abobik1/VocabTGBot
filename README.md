@@ -1,2 +1,227 @@
 # VocabTGBot
-Бот для изучения английских слов или предложений работающий без аренды сервера
+
+Личный Telegram-бот для заучивания английских слов по карточкам. Ты сам присылаешь боту слово
+с переводом и примерами. Несколько раз в день бот присылает карточку: перевод скрыт под спойлером,
+а под карточкой две кнопки — «Знаю» и «Не знаю». Каждое слово проверяется в обе стороны
+(RU→EN, потом EN→RU). Выученные слова уходят в архив, и время от времени их можно
+пройти снова, вернув забытые в очередь.
+
+Смысл в том, чтобы не открывать отдельное приложение: карточка сама приходит уведомлением,
+на неё отвечаешь одним нажатием. Бот работает на бесплатных тарифах, свой сервер не нужен.
+
+## Стек и почему он такой
+
+| Что | Чем | Почему |
+|---|---|---|
+| Вебхук Telegram (кнопки, команды, добавление слов) | Cloudflare Worker на Python | Бесплатно (100k запросов в день), отвечает сразу и не «засыпает», как бесплатные хостинги |
+| Хранилище | Cloudflare KV | Бесплатно, простое key-value, отдельная БД не нужна |
+| Карточки по расписанию и статистика за неделю | GitHub Actions (cron) | Бесплатно, не нужен постоянно работающий процесс; раннеры находятся не в РФ, поэтому `api.telegram.org` доступен |
+| Язык | Python везде | Вся бизнес-логика в одном модуле `shared/`, его используют и Worker, и Actions |
+
+## Архитектура
+
+```
+Telegram user
+     │ (сообщение / нажатие кнопки)
+     ▼
+Cloudflare Worker (Python, вебхук)            worker/src/entry.py
+     │  читает/пишет
+     ▼
+Cloudflare KV (allowed_users, queue:*, known:*, state:*)
+     ▲
+     │  читает/пишет через Cloudflare REST API
+GitHub Actions (cron)                          scripts/*.py
+  1) отправка карточки — раз в 2 часа, 10:00–22:00 МСК   .github/workflows/send-card.yml
+  2) недельная статистика — воскресенье 20:00 МСК        .github/workflows/weekly-stats.yml
+     │
+     ▼
+Telegram user (получает сообщение)
+```
+
+```
+shared/          бизнес-логика: модель слова, парсинг, очередь/архив, HTML-карточки, роутинг апдейтов
+worker/          Cloudflare Worker (вебхук); shared/ копируется в worker/src/ при сборке
+scripts/         запускаются в GitHub Actions: отправка карточек, статистика, установка вебхука
+tests/           unit- и сценарные тесты (python -m unittest)
+```
+
+### Данные в KV
+
+| Ключ | Что хранит |
+|---|---|
+| `allowed_users` | `[{"username", "role": "owner" \| "full", "chat_id"}]`. Владелец добавляется автоматически при первом сообщении |
+| `queue:<username>` | очередь слов на изучение (JSON-массив, порядок = очередь) |
+| `known:<username>` | архив выученных слов |
+| `state:<username>` | режим «повтора» (снимок списка, который тебе показали) |
+
+У каждого пользователя свои очередь и архив. Приглашённый через `/allow` учит свои слова
+и не видит чужих. Все слова пользователя хранятся в одном ключе: так тратится меньше записей
+из дневного лимита KV.
+
+## Как пользоваться
+
+Добавить слово — одно сообщение: первая строка — слово и перевод, дальше по желанию примеры.
+Разделитель — ` - ` (учитывается первое вхождение в строке).
+
+```
+apple - яблоко
+I ate an apple. - Я съел яблоко.
+An apple a day... - Одно яблоко в день...
+```
+
+- **Знаю** на RU→EN → слово переходит на EN→RU и встаёт в конец очереди.
+- **Знаю** на EN→RU → слово уходит в архив, бот присылает поздравление.
+- **Не знаю** → слово встаёт третьим в очереди, направление проверки не меняется.
+- **Повторить слова** (`/review`) → нумерованный список архива, новые сверху. Ответь номерами забытых слов
+  (`2 5 7`) — они вернутся в очередь и снова пройдут RU→EN. Кнопка «Меню» закрывает режим повтора.
+- **Карточка сейчас** (`/next`) → прислать карточку вне расписания.
+- `/stats` — статистика прямо сейчас. `/allow @username` — дать доступ (только владелец).
+- Сообщения от пользователей не из списка бот молча игнорирует.
+
+Следующая карточка приходит по расписанию, а не сразу после ответа: задумано, что слова
+приходят понемногу в течение дня.
+
+## ⚠️ Репозиторий публичный — что нельзя коммитить
+
+**Никогда** не коммить:
+
+- `TELEGRAM_BOT_TOKEN`
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
+- `TELEGRAM_WEBHOOK_SECRET`
+- `OWNER_USERNAME` — твой Telegram username. Он публичный, но связывать его с репозиторием незачем,
+  поэтому он хранится как секрет Worker, а не в `wrangler.toml`
+- ID KV-namespace. Сам по себе он не секрет, но светить его незачем. Его нет в `wrangler.toml`:
+  `worker/build_config.sh` подставляет его из переменной окружения в `wrangler.deploy.toml`, который в `.gitignore`.
+
+Где хранить секреты:
+
+- **GitHub Actions**: `Settings → Secrets and variables → Actions → New repository secret`.
+- **Cloudflare Worker**: `npx wrangler secret put NAME` (не в `wrangler.toml` и не в коде).
+- **Локально**: `.env` и `worker/.dev.vars` (оба в `.gitignore`). Шаблоны: `.env.example` и `worker/.dev.vars.example`.
+
+Перед первым публичным пушем проверь, что в истории нет токенов:
+
+```sh
+git log -p --all | grep -nE '[0-9]{8,10}:[A-Za-z0-9_-]{35}|cfut_[A-Za-z0-9]{20,}' || echo "tokens not found"
+```
+
+Открыто лежат бизнес-логика, тексты карточек и cron-расписание.
+
+## Настройка с нуля
+
+Нужны: Python 3.12+, Node.js 18+ (для `npx wrangler`), аккаунты Telegram, Cloudflare и GitHub.
+
+### 1. Telegram-бот
+
+1. Напиши [@BotFather](https://t.me/BotFather) → `/newbot` → получи токен.
+2. Придумай секрет для вебхука, например `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`.
+   Telegram будет присылать его в каждом запросе, а Worker — отклонять запросы без него.
+
+### 2. Cloudflare
+
+1. Зарегистрируйся на [dash.cloudflare.com](https://dash.cloudflare.com), зайди в **Workers & Pages** и выбери поддомен `*.workers.dev`.
+2. **Account ID** — в правой колонке на странице Workers & Pages.
+3. Залогинься в wrangler: `npx wrangler@4 login`.
+4. Создай KV namespace и сохрани его `id`:
+   ```sh
+   npx wrangler@4 kv namespace create VOCAB_KV
+   ```
+5. Для GitHub Actions создай отдельный API-токен с минимальными правами:
+   **My Profile → API Tokens → Create Token → Custom token → Permissions: Account · Workers KV Storage · Edit**.
+
+### 3. Деплой Worker
+
+```sh
+cd worker
+CF_KV_NAMESPACE_ID=<id из шага 2.4> ./build_config.sh
+npx wrangler@4 deploy -c wrangler.deploy.toml
+npx wrangler@4 secret put TELEGRAM_BOT_TOKEN -c wrangler.deploy.toml
+npx wrangler@4 secret put TELEGRAM_WEBHOOK_SECRET -c wrangler.deploy.toml
+npx wrangler@4 secret put OWNER_USERNAME -c wrangler.deploy.toml     # твой username без @
+curl https://vocab-bot.<твой-поддомен>.workers.dev   # должно вернуть "ok"
+```
+
+Worker использует встроенный в рантайм Python SDK (флаг `disable_python_external_sdk`), поэтому
+хватает обычного `wrangler deploy`: `pywrangler` и вендоринг пакетов не нужны. Внешних
+зависимостей у Worker нет.
+
+Пока `OWNER_USERNAME` не задан, бот никого не пускает. При первом сообщении владелец
+записывается в `allowed_users` в KV. Если владельца нужно поменять позже, удали ключ
+`allowed_users` в KV (Cloudflare → Storage & Databases → KV) и задай секрет заново.
+
+#### Python Worker и баг 1101
+
+В сентябре 2026 был открыт issue [cloudflare/workers-py#259](https://github.com/cloudflare/workers-py/issues/259):
+свежесобранные Python Workers падали на edge с ошибкой 1101. Этот Worker проверен деплоем
+19.09.2026: на edge он отвечает `200`, бот работает. Поэтому запасной вариант
+(JS-прокладка, которая пересылает апдейты в GitHub Actions через `repository_dispatch`)
+**не понадобился** и не реализован: вся логика работает прямо в Python Worker.
+
+Если после деплоя `curl` на адрес Worker возвращает `error code: 1101`, это, скорее всего, тот
+самый баг. Проверь issue на свежие новости: в нём отмечено, что старые, уже задеплоенные сборки
+продолжают работать.
+
+### 4. Вебхук
+
+```sh
+TELEGRAM_BOT_TOKEN=... TELEGRAM_WEBHOOK_SECRET=... \
+  python3 scripts/set_webhook.py https://vocab-bot.<твой-поддомен>.workers.dev
+```
+
+Напиши боту `/start`: он запомнит твой `chat_id`, и после этого начнут приходить карточки по расписанию.
+
+### 5. GitHub Actions
+
+В `Settings → Secrets and variables → Actions` добавь секреты:
+
+| Секрет | Значение |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | токен бота |
+| `CLOUDFLARE_API_TOKEN` | токен из шага 2.5 (только KV Edit) |
+| `CLOUDFLARE_ACCOUNT_ID` | Account ID |
+| `CF_KV_NAMESPACE_ID` | id KV namespace |
+
+Проверь вручную: вкладка **Actions → Send flashcard → Run workflow**.
+
+## Как поменять расписание
+
+Всё настраивается в [`.github/workflows/send-card.yml`](.github/workflows/send-card.yml#L5-L16):
+cron-выражение в [строке 16](.github/workflows/send-card.yml#L16), рядом комментарии с примерами.
+GitHub cron работает в UTC, МСК = UTC+3.
+
+- `"0 7-19/2 * * *"` — каждые 2 часа с 10:00 до 22:00 МСК (по умолчанию);
+- `"0 6-18/2 * * *"` — с 09:00 до 21:00 МСК;
+- `"0 7-19 * * *"` — каждый час; `"0 7-19/3 * * *"` — каждые 3 часа.
+
+Недельная статистика — [`.github/workflows/weekly-stats.yml`, строка 6](.github/workflows/weekly-stats.yml#L6)
+(по умолчанию воскресенье 20:00 МСК).
+
+Особенности GitHub cron: запуск может опаздывать на 5–30 минут, а в публичном репозитории
+scheduled-workflow автоматически отключаются после 60 дней без коммитов. Если бот перестал
+присылать карточки, зайди во вкладку Actions и включи workflow обратно.
+
+## Разработка и тесты
+
+```sh
+python3 -m unittest discover -s tests -t . -v       # логика, карточки, сценарии бота, REST-клиенты
+```
+
+Локальный запуск Worker (Pyodide в `workerd`, KV эмулируется локально):
+
+```sh
+cd worker
+cp .dev.vars.example .dev.vars        # заполни значения
+CF_KV_NAMESPACE_ID=local-dev ./build_config.sh
+npx wrangler@4 dev -c wrangler.deploy.toml
+```
+
+Чтобы не слать реальные сообщения, задай в `.dev.vars` `TELEGRAM_API_BASE` — адрес
+mock-сервера Telegram.
+
+## Ограничения
+
+- KV — eventually consistent: запись видна в других регионах через время до ~60 секунд. Если нажать
+  кнопку в ту же минуту, когда Actions прислали карточку, счётчик показов (`shown_count`)
+  может отстать на единицу. Для личного бота это некритично.
+- Лимит бесплатного KV — 1000 записей в сутки. Одна карточка или один ответ тратит 1–2 записи, так что запаса хватает.
