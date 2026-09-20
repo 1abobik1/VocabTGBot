@@ -215,6 +215,22 @@ class BotTest(unittest.TestCase):
         self.press("k:" + self.last_card_word().split(":")[0])
         self.assertEqual(self.queue()[0]["stage"], 1)
 
+    def test_archive_button(self):
+        self.msg("/start")
+        self.msg("apple - яблоко")
+        self.msg("cat - кот")
+        run(self.bot.broadcast_cards())
+        self.press("a:" + self.last_card_word())
+        self.assertEqual([w["en"] for w in self.known()], ["apple"])
+        self.assertTrue(self.known()[0]["archived_at"])
+        self.assertEqual([w["en"] for w in self.queue()], ["cat"])
+        self.assertIsNone(self.store.json(f"practice:{OWNER.lower()}"))
+        answers = [p for m, p in self.tg.calls if m == "answerCallbackQuery"]
+        self.assertEqual(answers[-1]["text"], "📥 Слово сразу в архиве")
+        # the archived word shows up in "Повтор архивных слов"
+        self.msg(cards.REVIEW_BUTTON)
+        self.assertIn("1) apple — яблоко", self.tg.last_text())
+
     def test_stage1_card_is_reversed(self):
         self.msg("apple - яблоко\nI ate an apple. - Я съел яблоко.")
         run(self.bot.broadcast_cards())

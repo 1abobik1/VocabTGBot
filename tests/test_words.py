@@ -116,6 +116,18 @@ class TransitionsTest(unittest.TestCase):
         w.answer_unknown(queue, queue[0]["id"])
         self.assertEqual([x["en"] for x in queue], ["a"])
 
+    def test_archive_button_skips_the_remaining_steps(self):
+        a, b = make("a"), make("b")
+        queue, known = [a, b], []
+        result, word = w.answer_archive(queue, known, a["id"], now="2026-09-20T10:00:00+00:00", stage=0)
+        self.assertEqual(result, w.ARCHIVED)
+        self.assertEqual([x["en"] for x in queue], ["b"])
+        self.assertEqual(known, [word])
+        self.assertEqual(word["archived_at"], "2026-09-20T10:00:00+00:00")
+        # a stale button (the card has flipped since) changes nothing
+        self.assertEqual(w.answer_archive(queue, known, b["id"], stage=1), (w.NOT_FOUND, None))
+        self.assertEqual(len(known), 1)
+
     def test_stale_card(self):
         self.assertEqual(w.answer_known([], [], "nope"), (w.NOT_FOUND, None))
         self.assertEqual(w.answer_unknown([], "nope"), (w.NOT_FOUND, None))
@@ -179,7 +191,8 @@ class CardTest(unittest.TestCase):
 
     def test_keyboard(self):
         buttons = cards.card_keyboard(self.word)["inline_keyboard"][0]
-        self.assertEqual([b["text"] for b in buttons], ["Знаю", "Не знаю"])
+        self.assertEqual([b["text"] for b in buttons], ["Знаю", "Не знаю", "📥 В архив"])
+        self.assertEqual(buttons[2]["callback_data"], f"a:{self.word['id']}:0")
         self.assertEqual(buttons[0]["callback_data"], f"k:{self.word['id']}:0")
         self.assertEqual(buttons[1]["callback_data"], f"n:{self.word['id']}:0")
         self.word["stage"] = 1

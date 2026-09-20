@@ -292,12 +292,12 @@ class Bot:
                 await self._finish_practice(username, chat_id, session)
             return
         prefix, _, value = data.partition(":")
-        if prefix in ("ia", "ie", "ix", "lv", "gen"):
+        if prefix in ("ia", "ib", "ie", "ix", "lv", "gen"):
             await self.tg.call("answerCallbackQuery", {"callback_query_id": query["id"]})
-            if prefix in ("ia", "ix") and message_id is not None:
+            if prefix in ("ia", "ib", "ix") and message_id is not None:
                 await self._drop_buttons(chat_id, message_id)
-            if prefix == "ia":
-                await self._inbox_approve(username, chat_id, value)
+            if prefix in ("ia", "ib"):
+                await self._inbox_approve(username, chat_id, value, bare=prefix == "ib")
             elif prefix == "ix":
                 await self._inbox_delete(username, chat_id, value)
             elif prefix == "ie":
@@ -311,22 +311,26 @@ class Bot:
         # "k:<id>:<stage>" / "n:<id>:<stage>"; cards sent before the stage suffix have no ":<stage>".
         action, _, rest = data.partition(":")
         word_id, _, stage = rest.partition(":")
-        if action not in ("k", "n") or not word_id or (stage and not stage.isdigit()):
+        if action not in ("k", "n", "a") or not word_id or (stage and not stage.isdigit()):
             await self.tg.call("answerCallbackQuery", {"callback_query_id": query["id"]})
             return
         stage = int(stage) if stage else None
 
         queue = await self.repo.get(queue_key(username), [])
+        waiting = known = None
         if action == "k":
             waiting = await self.repo.get(practice_key(username), [])
             result, word = w.answer_known(queue, waiting, word_id, stage=stage)
+        elif action == "a":
+            known = await self.repo.get(known_key(username), [])
+            result, word = w.answer_archive(queue, known, word_id, stage=stage)
         else:
-            waiting = None
             result, word = w.answer_unknown(queue, word_id, stage=stage)
 
         notices = {
             w.FLIPPED: "👍 Теперь проверю в обратную сторону",
             w.TO_PRACTICE: "🎯 Отлично! Слово ждёт субботней практики",
+            w.ARCHIVED: "📥 Слово сразу в архиве",
             w.REQUEUED: "🔁 Слово вернётся через пару карточек",
             w.NOT_FOUND: "Эта карточка уже неактуальна",
         }
@@ -334,6 +338,8 @@ class Bot:
             await self.repo.put(queue_key(username), queue)
             if result == w.TO_PRACTICE:
                 await self.repo.put(practice_key(username), waiting)
+            elif result == w.ARCHIVED:
+                await self.repo.put(known_key(username), known)
 
         await self.tg.call("answerCallbackQuery", {"callback_query_id": query["id"], "text": notices[result]})
         if message_id is not None:
@@ -425,6 +431,9 @@ class Bot:
             pair = f"{escape(duplicate['en'])} — {escape(duplicate['ru'])}"
             await self.send(chat_id, f"Не добавил: «{pair}» {where}.")
             return
+        if not examples and not synonyms and self.ai is not None:
+            if await self._add_with_ai_examples(username, chat_id, en, ru):
+                return
         queue.append(w.new_word(en, ru, examples, synonyms))
         await self.repo.put(queue_key(username), queue)
         await self.send(
@@ -432,6 +441,24 @@ class Bot:
             f"➕ Добавлено: <b>{escape(en)}</b> — {escape(ru)}\n"
             f"Примеров: {len(examples)}. В очереди: {len(queue)}.",
         )
+
+    async def _add_with_ai_examples(self, username, chat_id, en, ru):
+        """Ask the AI for examples and synonyms and put the card in the inbox for review."""
+        await self.send(chat_id, f"⏳ Придумываю примеры для <b>{escape(en)}</b>…")
+        try:
+            examples, synonyms = await generator.enrich(self.ai, en, ru, model=self.ai_model)
+        except Exception as error:
+            print(f"enrichment failed: {error!r}")
+            examples = []
+        if not examples:
+            return False  # fall back to adding the bare word
+        word = w.new_word(en, ru, examples, synonyms)
+        word["source"] = "manual"
+        inbox = await self.repo.get(inbox_key(username), [])
+        inbox.append(word)
+        await self.repo.put(inbox_key(username), inbox)
+        await self.send_inbox_card(username, chat_id, inbox[-1:])
+        return True
 
     async def _start_review(self, username, chat_id):
         known = w.known_newest_first(await self.repo.get(known_key(username), []))
@@ -575,16 +602,19 @@ class Bot:
             return inbox, None
         return inbox, inbox.pop(index)
 
-    async def _inbox_approve(self, username, chat_id, word_id):
+    async def _inbox_approve(self, username, chat_id, word_id, bare=False):
+        """Move a reviewed card into the queue; `bare` drops the examples and synonyms."""
         inbox, word = await self._take_from_inbox(username, chat_id, word_id)
         if word is None:
             return
+        if bare:
+            word["examples"], word["synonyms"] = [], []
         queue = await self.repo.get(queue_key(username), [])
         known = await self.repo.get(known_key(username), [])
         if w.find_duplicate(word["en"], word["ru"], queue, known):
             await self.send(chat_id, f"«{escape(word['en'])}» уже есть в очереди или архиве — пропускаю.")
         else:
-            for field in ("level", "topic"):
+            for field in ("level", "topic", "source"):
                 word.pop(field, None)
             word["added_at"] = w.now_iso()
             queue.append(word)

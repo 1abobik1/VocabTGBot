@@ -7,6 +7,7 @@ from .words import current_example
 
 KNOWN_BUTTON = "Знаю"
 UNKNOWN_BUTTON = "Не знаю"
+ARCHIVE_BUTTON = "📥 В архив"
 NEXT_BUTTON = "🃏 Карточка сейчас"
 REVIEW_BUTTON = "🔁 Повтор архивных слов"
 GENERATE_BUTTON = "🤖 AI-Генерация"
@@ -24,7 +25,8 @@ ARCHIVE_PATH = (
     "Как слово попадает в архив:\n"
     "1. «Знаю» на карточке RU→EN\n"
     "2. «Знаю» на карточке EN→RU\n"
-    f"3. Верно написать его на практике (по субботам в 9:00 или кнопка «{PRACTICE_BUTTON}»)"
+    f"3. Верно написать его на практике (по субботам в 9:00 или кнопка «{PRACTICE_BUTTON}»)\n"
+    f"Либо сразу — кнопкой «{ARCHIVE_BUTTON}» под карточкой, если слово уже знаешь."
 )
 
 HELP_TEXT = (
@@ -33,7 +35,9 @@ HELP_TEXT = (
     "I ate an apple. - Я съел яблоко.\n"
     "Синонимы: fruit - фрукт</code>\n"
     "Первая строка — слово и перевод, дальше по желанию примеры и синонимы. Разделитель « - » или « — » "
-    "с пробелами, порядок языков любой.\n\n"
+    "с пробелами, порядок языков любой.\n"
+    "Если примеров и синонимов нет, их придумает ИИ и покажет карточку на проверку: "
+    "«В очередь», «Исправить», «Без примеров» или «Удалить».\n\n"
     "<b>Кнопки</b>\n"
     f"{NEXT_BUTTON} — следующая карточка из очереди прямо сейчас, не дожидаясь расписания. "
     "Если на прошлую карточку ещё нет ответа, пришлёт её повторно.\n\n"
@@ -94,7 +98,8 @@ def render_synonyms(word):
 
 def render_inbox_card(word, remaining, level=None):
     """A generated card shown fully open, to memorise it before it goes to the queue."""
-    header = "🆕 Новая карточка" + (f" · {level}" if level else "")
+    header = "🆕 Примеры от ИИ" if word.get("source") == "manual" else "🆕 Новая карточка"
+    header += f" · {level}" if level else ""
     if remaining > 1:
         header += f" · на проверке ещё {remaining - 1}"
     lines = [header, "", f"<b>{escape(_capitalize(word['en']))}</b> — {escape(word['ru'])}"]
@@ -108,15 +113,16 @@ def render_inbox_card(word, remaining, level=None):
 
 def inbox_keyboard(word):
     word_id = word["id"]
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "✅ В очередь", "callback_data": f"ia:{word_id}"},
-                {"text": "✏️ Исправить", "callback_data": f"ie:{word_id}"},
-                {"text": "🗑 Удалить", "callback_data": f"ix:{word_id}"},
-            ]
+    rows = [
+        [
+            {"text": "✅ В очередь", "callback_data": f"ia:{word_id}"},
+            {"text": "✏️ Исправить", "callback_data": f"ie:{word_id}"},
+            {"text": "🗑 Удалить", "callback_data": f"ix:{word_id}"},
         ]
-    }
+    ]
+    if word.get("examples") or word.get("synonyms"):
+        rows.append([{"text": "🚫 Без примеров", "callback_data": f"ib:{word_id}"}])
+    return {"inline_keyboard": rows}
 
 
 def render_generate_menu(level):
@@ -153,6 +159,7 @@ def card_keyboard(word):
             [
                 {"text": KNOWN_BUTTON, "callback_data": f"k:{word['id']}:{stage}"},
                 {"text": UNKNOWN_BUTTON, "callback_data": f"n:{word['id']}:{stage}"},
+                {"text": ARCHIVE_BUTTON, "callback_data": f"a:{word['id']}:{stage}"},
             ]
         ]
     }

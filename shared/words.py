@@ -155,6 +155,7 @@ def current_example(word):
 # Results of answer_known / answer_unknown.
 FLIPPED = "flipped"      # stage 0 -> 1, moved to the end of the queue
 TO_PRACTICE = "practice" # stage 1 -> waits for the Saturday practice (stage 2)
+ARCHIVED = "archived"    # "В архив": straight to known, skipping the remaining steps
 REQUEUED = "requeued"    # "Не знаю": moved to RETRY_POSITION
 NOT_FOUND = "not_found"  # card is stale (word already archived or deleted)
 
@@ -194,6 +195,16 @@ def answer_known(queue, practice, word_id, now=None, stage=None):
     word["practice_since"] = now or now_iso()
     practice.append(word)
     return TO_PRACTICE, word
+
+
+def answer_archive(queue, known, word_id, now=None, stage=None):
+    """Apply "В архив": the word skips the remaining steps and the practice."""
+    word = _take(queue, word_id, stage)
+    if word is None:
+        return NOT_FOUND, None
+    word["archived_at"] = now or now_iso()
+    known.append(word)
+    return ARCHIVED, word
 
 
 def answer_unknown(queue, word_id, stage=None):

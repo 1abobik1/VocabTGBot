@@ -52,6 +52,17 @@ SYSTEM_PROMPT = (
     '"synonyms":[{{"en":"","ru":""}}]}}]}}'
 )
 
+ENRICH_PROMPT = (
+    "You help a native Russian speaker learn English. For the given English word or phrase and its "
+    "Russian translation write exactly 2 short example sentences that people really say in conversation "
+    "and that contain the word, each with a Russian translation of the meaning (not word for word), "
+    "and English synonyms with Russian translations. "
+    "Synonyms must be real synonyms: same meaning and part of speech, able to replace the word in the "
+    "example sentence. Give 1-2 of them; if there is no good synonym, give an empty list. "
+    "Russian text must be grammatical, sound natural to a native speaker and contain no English words. "
+    'Answer with JSON only: {{"examples":[{{"en":"","ru":""}}],"synonyms":[{{"en":"","ru":""}}]}}'
+)
+
 _PAIR_SCHEMA = {
     "type": "object",
     "properties": {"en": {"type": "string"}, "ru": {"type": "string"}},
@@ -75,6 +86,15 @@ RESPONSE_SCHEMA = {
         }
     },
     "required": ["cards"],
+}
+
+ENRICH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "examples": {"type": "array", "items": _PAIR_SCHEMA},
+        "synonyms": {"type": "array", "items": _PAIR_SCHEMA},
+    },
+    "required": ["examples", "synonyms"],
 }
 
 _CYRILLIC = re.compile("[а-яё]", re.IGNORECASE)
@@ -196,3 +216,32 @@ async def generate(ai, level, count, topic=None, existing=(), model=DEFAULT_MODE
         output = await ai.run(model, build_input(level, missing, topic, known))
         cards += parse_cards(output, known, limit=missing)
     return cards
+
+
+def build_enrich_input(en, ru):
+    return {
+        "messages": [
+            {"role": "system", "content": ENRICH_PROMPT},
+            {"role": "user", "content": f"Word: {en}\nRussian translation: {ru}"},
+        ],
+        "max_tokens": 500,
+        "temperature": 0.7,
+        "response_format": {"type": "json_schema", "json_schema": ENRICH_SCHEMA},
+    }
+
+
+def parse_enrichment(output):
+    """(examples, synonyms) from a model response; invalid pairs are dropped."""
+    payload = _response_payload(output)
+    examples = [p for p in map(_clean_pair, payload.get("examples") or []) if p][:2]
+    synonyms = [p for p in map(_clean_pair, payload.get("synonyms") or []) if p][:2]
+    return examples, synonyms
+
+
+async def enrich(ai, en, ru, model=DEFAULT_MODEL):
+    """Examples and synonyms for a word the user added by hand. Empty lists if nothing usable."""
+    for _ in range(2):
+        examples, synonyms = parse_enrichment(await ai.run(model, build_enrich_input(en, ru)))
+        if examples:
+            return examples, synonyms
+    return [], []

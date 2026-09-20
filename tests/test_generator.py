@@ -116,6 +116,21 @@ class ParseCardsTest(unittest.TestCase):
         # the word's own translation stays strict
         self.assertEqual(generator.parse_cards({"response": {"cards": [card("python", "язык Python")]}}), [])
 
+    def test_enrich_validates_and_retries(self):
+        ai = FakeAI(
+            {"response": {"examples": [{"en": "The app crashed.", "ru": "Приложение crashedнуло."}], "synonyms": []}},
+            {"response": {"examples": [{"en": "I ate an apple.", "ru": "Я съел яблоко."}],
+                          "synonyms": [{"en": "fruit", "ru": "фрукт"}, {"en": "", "ru": "пусто"}]}},
+        )
+        examples, synonyms = asyncio.run(generator.enrich(ai, "apple", "яблоко"))
+        self.assertEqual(examples, [{"en": "I ate an apple.", "ru": "Я съел яблоко."}])
+        self.assertEqual(synonyms, [{"en": "fruit", "ru": "фрукт"}])
+        self.assertEqual(len(ai.calls), 2)
+
+    def test_enrich_gives_up(self):
+        ai = FakeAI({"response": "nope"}, {"response": "nope"})
+        self.assertEqual(asyncio.run(generator.enrich(ai, "apple", "яблоко")), ([], []))
+
     def test_generate_retries_once(self):
         ai = FakeAI({"response": "nothing"}, {"response": {"cards": [card("chill", "отдыхать")]}})
         result = asyncio.run(generator.generate(ai, "B1", 1))
@@ -164,7 +179,7 @@ class InboxFlowTest(unittest.TestCase):
 
     def inbox_buttons(self):
         sent = [p for p in self.tg.sent() if p.get("reply_markup", {}).get("inline_keyboard", [[{}]])[0][0].get("callback_data", "").startswith("ia:")]
-        return {b["text"]: b["callback_data"] for b in sent[-1]["reply_markup"]["inline_keyboard"][0]}
+        return {b["text"]: b["callback_data"] for row in sent[-1]["reply_markup"]["inline_keyboard"] for b in row}
 
     def test_generate_review_edit_and_approve(self):
         self.msg("/start")
@@ -276,6 +291,66 @@ class InboxFlowTest(unittest.TestCase):
         self.msg("/gen 2")
         self.assertIn("Не получилось", self.tg.last_text())
         self.assertEqual(self.key("inbox"), None)
+
+    def enrichment(self, examples=(("I ate an apple.", "Я съел яблоко."),), synonyms=(("fruit", "фрукт"),)):
+        return {"response": {
+            "examples": [{"en": a, "ru": b} for a, b in examples],
+            "synonyms": [{"en": a, "ru": b} for a, b in synonyms],
+        }}
+
+    def test_manual_word_without_examples_is_enriched_by_ai(self):
+        self.msg("/start")
+        self.ai.responses.append(self.enrichment())
+        self.msg("apple - яблоко")
+
+        prompt = self.ai.calls[-1][1]["messages"]
+        self.assertIn("Word: apple", prompt[1]["content"])
+        self.assertIn("Russian translation: яблоко", prompt[1]["content"])
+        self.assertIsNone(self.key("queue"))  # waits for review, not in the queue yet
+        card = self.key("inbox")[0]
+        self.assertEqual(card["examples"], [{"en": "I ate an apple.", "ru": "Я съел яблоко."}])
+        self.assertEqual(card["synonyms"], [{"en": "fruit", "ru": "фрукт"}])
+        self.assertIn("🆕 Примеры от ИИ", self.tg.last_text())
+        self.assertIn("⏳ Придумываю примеры", self.tg.sent()[-2]["text"])
+
+        self.press(self.inbox_buttons()["✅ В очередь"])
+        queued = self.key("queue")[0]
+        self.assertEqual(queued["en"], "apple")
+        self.assertEqual(len(queued["examples"]), 1)
+        self.assertNotIn("source", queued)
+
+    def test_bare_button_drops_ai_examples(self):
+        self.msg("/start")
+        self.ai.responses.append(self.enrichment())
+        self.msg("apple - яблоко")
+        self.press(self.inbox_buttons()["🚫 Без примеров"])
+        queued = self.key("queue")[0]
+        self.assertEqual((queued["examples"], queued["synonyms"]), ([], []))
+        self.assertEqual(self.key("inbox"), [])
+
+    def test_manual_word_with_examples_is_not_enriched(self):
+        self.msg("/start")
+        self.msg("apple - яблоко\nI ate an apple. - Я съел яблоко.")
+        self.assertEqual(self.ai.calls, [])
+        self.assertEqual(len(self.key("queue")), 1)
+        self.assertIsNone(self.key("inbox"))
+
+    def test_word_is_added_as_is_when_enrichment_fails(self):
+        self.msg("/start")
+        self.ai.responses += [RuntimeError("down")]
+        self.msg("apple - яблоко")
+        self.assertEqual([x["en"] for x in self.key("queue")], ["apple"])
+        self.assertIn("➕ Добавлено", self.tg.last_text())
+        # a model answering with junk is the same case
+        self.ai.responses += [{"response": "sorry"}, {"response": "sorry"}]
+        self.msg("cat - кот")
+        self.assertEqual([x["en"] for x in self.key("queue")], ["apple", "cat"])
+
+    def test_no_ai_means_straight_to_the_queue(self):
+        bot = Bot(self.store, self.tg, owner=OWNER)
+        asyncio.run(bot.handle_update({"message": {"message_id": 1, "from": {"id": CHAT, "username": OWNER},
+                                                   "chat": {"id": CHAT, "type": "private"}, "text": "dog - собака"}}))
+        self.assertEqual([x["en"] for x in self.key("queue")], ["dog"])
 
     def test_manual_add_keeps_synonyms(self):
         self.msg("quite - довольно\nIt's quite cold. - Довольно холодно.\nСинонимы: fairly - довольно")
