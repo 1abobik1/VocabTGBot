@@ -1,13 +1,14 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from shared import cards
+from shared import cards, srs
 from shared import words as w
+from shared.schedule import Schedule
 
 
-def make(en, stage=0, **extra):
+def make(en, stage=0, box=0, **extra):
     word = w.new_word(en, en + "_ru")
-    word["stage"] = stage
+    word["stage"], word["box"] = stage, box
     word.update(extra)
     return word
 
@@ -82,39 +83,70 @@ class ParseTest(unittest.TestCase):
 
 
 class TransitionsTest(unittest.TestCase):
-    def test_known_stage0_flips_and_moves_to_end(self):
-        a, b, c = make("a"), make("b"), make("c")
-        queue, known = [a, b, c], []
-        result, word = w.answer_known(queue, known, a["id"])
-        self.assertEqual(result, w.FLIPPED)
-        self.assertEqual([x["en"] for x in queue], ["b", "c", "a"])
-        self.assertEqual(word["stage"], 1)
-        self.assertEqual(known, [])
+    """Переходы слова: интервалы вместо позиции в очереди (см. shared/srs.py)."""
 
-    def test_known_stage1_goes_to_practice(self):
-        a, b = make("a", stage=1), make("b")
+    def setUp(self):
+        self.schedule = Schedule()
+        self.now = datetime(2026, 9, 24, 12, 0, tzinfo=timezone.utc)
+        self.today = "2026-09-24"
+
+    def known(self, queue, practice, word, stage=None):
+        return w.answer_known(queue, practice, word["id"], self.schedule, self.now, self.today, stage=stage)
+
+    def unknown(self, queue, word, stage=None):
+        return w.answer_unknown(queue, word["id"], self.schedule, self.now, self.today, stage=stage)
+
+    def test_new_word_flips_to_the_second_side_immediately(self):
+        a, b = make("a"), make("b")
         queue, practice = [a, b], []
-        result, word = w.answer_known(queue, practice, a["id"], now="2026-09-19T10:00:00+00:00")
+        result, word = self.known(queue, practice, a)
+        self.assertEqual(result, w.FLIPPED)
+        self.assertEqual([x["en"] for x in queue], ["a", "b"])  # порядок больше ничего не решает
+        self.assertEqual((word["stage"], word["box"]), (1, 0))
+        self.assertEqual(word["due_at"], self.now.isoformat())  # вторая сторона сразу
+        self.assertEqual(practice, [])
+
+    def test_successful_reviews_grow_the_interval_then_go_to_practice(self):
+        a = make("a", stage=1)
+        queue, practice = [a], []
+        result, word = self.known(queue, practice, a, stage=1)
+        self.assertEqual(result, w.REVIEWED)
+        self.assertEqual((word["box"], word["stage"]), (1, 0))
+        self.assertEqual(word["due_at"], (self.now + timedelta(days=1)).isoformat())
+
+        result, word = self.known(queue, practice, a, stage=0)
+        self.assertEqual((result, word["box"]), (w.REVIEWED, 2))
+        self.assertEqual(word["due_at"], (self.now + timedelta(days=3)).isoformat())
+
+        result, word = self.known(queue, practice, a, stage=1)
         self.assertEqual(result, w.TO_PRACTICE)
-        self.assertEqual([x["en"] for x in queue], ["b"])
+        self.assertEqual(queue, [])
         self.assertEqual(practice, [word])
-        self.assertEqual((word["stage"], word["practice_since"], word["archived_at"]), (2, "2026-09-19T10:00:00+00:00", None))
+        self.assertEqual((word["stage"], word["practice_since"]), (2, self.now.isoformat()))
 
-    def test_unknown_goes_to_third_position_and_keeps_stage(self):
+    def test_unknown_postpones_by_steps_and_keeps_the_direction(self):
         for stage in (0, 1):
-            queue = [make("a", stage=stage), make("b"), make("c"), make("d")]
-            result, word = w.answer_unknown(queue, queue[0]["id"])
+            a = make("a", stage=stage, box=2)
+            queue = [a]
+            result, word = self.unknown(queue, a, stage=stage)
             self.assertEqual(result, w.REQUEUED)
-            self.assertEqual([x["en"] for x in queue], ["b", "c", "a", "d"])
-            self.assertEqual(word["stage"], stage)
+            self.assertEqual([x["en"] for x in queue], ["a"])
+            self.assertEqual((word["stage"], word["box"]), (stage, 0))
+            self.assertEqual(word["due_at"], (self.now + timedelta(minutes=30)).isoformat())
 
-    def test_unknown_in_short_queue(self):
-        queue = [make("a"), make("b")]
-        w.answer_unknown(queue, queue[0]["id"])
-        self.assertEqual([x["en"] for x in queue], ["b", "a"])
-        queue = [make("a")]
-        w.answer_unknown(queue, queue[0]["id"])
-        self.assertEqual([x["en"] for x in queue], ["a"])
+            self.unknown(queue, a, stage=stage)
+            self.assertEqual(word["due_at"], (self.now + timedelta(hours=2)).isoformat())
+
+            self.unknown(queue, a, stage=stage)  # третий срыв подряд — завтра утром
+            self.assertEqual(word["due_at"], "2026-09-25T10:00:00+03:00")
+
+    def test_a_word_shown_three_times_today_waits_for_tomorrow(self):
+        a = make("a")
+        a["shows"] = {self.today: 3}
+        queue = [a]
+        _, word = self.unknown(queue, a)
+        self.assertEqual(word["due_at"], "2026-09-25T10:00:00+03:00")
+        self.assertFalse(srs.is_due(word, self.now, self.today))
 
     def test_archive_button_skips_the_remaining_steps(self):
         a, b = make("a"), make("b")
@@ -124,19 +156,19 @@ class TransitionsTest(unittest.TestCase):
         self.assertEqual([x["en"] for x in queue], ["b"])
         self.assertEqual(known, [word])
         self.assertEqual(word["archived_at"], "2026-09-20T10:00:00+00:00")
-        # a stale button (the card has flipped since) changes nothing
+        # устаревшая кнопка (слово с тех пор развернулось) ничего не делает
         self.assertEqual(w.answer_archive(queue, known, b["id"], stage=1), (w.NOT_FOUND, None))
         self.assertEqual(len(known), 1)
 
     def test_stale_card(self):
-        self.assertEqual(w.answer_known([], [], "nope"), (w.NOT_FOUND, None))
-        self.assertEqual(w.answer_unknown([], "nope"), (w.NOT_FOUND, None))
+        self.assertEqual(self.known([], [], {"id": "nope"}), (w.NOT_FOUND, None))
+        self.assertEqual(self.unknown([], {"id": "nope"}), (w.NOT_FOUND, None))
 
     def test_restore_from_known(self):
         a = make("a", stage=1, archived_at="2026-09-01T00:00:00+00:00")
         b = make("b", stage=1, archived_at="2026-09-02T00:00:00+00:00")
         queue, known = [make("q")], [a, b]
-        restored = w.restore_from_known(queue, known, [b["id"], "missing"])
+        restored = w.restore_from_known(queue, known, [b["id"], "missing"], Schedule(), datetime(2026, 9, 24, tzinfo=timezone.utc))
         self.assertEqual(restored, [b])
         self.assertEqual([x["en"] for x in queue], ["q", "b"])
         self.assertEqual(known, [a])

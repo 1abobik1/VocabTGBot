@@ -8,11 +8,11 @@ import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from . import srs
+
 SEPARATOR = " - "
 # Hyphen, en dash and em dash are equivalent separators; spaces around them are required.
 _SEPARATOR_RE = re.compile(r"\s[-\u2013\u2014]\s")
-# "Не знаю" puts the word back at this index: after the current first and second words.
-RETRY_POSITION = 2
 
 
 def now_iso():
@@ -110,8 +110,10 @@ def card_to_text(word):
     return "\n".join(lines)
 
 
-def new_word(en, ru, examples=None, synonyms=None):
+def new_word(en, ru, examples=None, synonyms=None, due_at=None):
     return {
+        "box": 0,
+        "due_at": due_at or now_iso(),
         "id": str(uuid.uuid4()),
         "en": en,
         "ru": ru,
@@ -152,12 +154,13 @@ def current_example(word):
     return examples[word.get("shown_count", 0) % len(examples)]
 
 
-# Results of answer_known / answer_unknown.
-FLIPPED = "flipped"      # stage 0 -> 1, moved to the end of the queue
-TO_PRACTICE = "practice" # stage 1 -> waits for the Saturday practice (stage 2)
-ARCHIVED = "archived"    # "В архив": straight to known, skipping the remaining steps
-REQUEUED = "requeued"    # "Не знаю": moved to RETRY_POSITION
-NOT_FOUND = "not_found"  # card is stale (word already archived or deleted)
+# Results of answer_known / answer_unknown / answer_archive.
+FLIPPED = "flipped"      # новое слово: вторая сторона показывается сразу
+REVIEWED = "reviewed"    # успешный повтор: слово назначено на следующий интервал
+TO_PRACTICE = "practice" # интервалы пройдены: слово ждёт практики
+ARCHIVED = "archived"    # "В архив": сразу в архив, минуя остальные шаги
+REQUEUED = "requeued"    # "Не знаю": слово отложено на 30 мин / 2 часа / завтра
+NOT_FOUND = "not_found"  # карточка устарела (слово уже архивировано или удалено)
 
 
 def is_awaiting_answer(queue):
@@ -165,12 +168,12 @@ def is_awaiting_answer(queue):
     return any(word.get("sent_at") for word in queue)
 
 
-def _take(queue, word_id, stage):
-    """Pop the word for an answer; `stage` (from the button) must match to reject stale cards."""
+def _find(queue, word_id, stage):
+    """Слово для ответа; `stage` из кнопки должен совпасть, иначе карточка устарела."""
     index = find_index(queue, word_id)
     if index < 0 or (stage is not None and queue[index].get("stage", 0) != stage):
         return None
-    word = queue.pop(index)
+    word = queue[index]
     word.pop("sent_at", None)
     return word
 
@@ -178,41 +181,40 @@ def _take(queue, word_id, stage):
 PRACTICE_STAGE = 2
 
 
-def answer_known(queue, practice, word_id, now=None, stage=None):
-    """Apply "Знаю". Mutates queue/practice in place and returns (result, word).
-
-    Stage 0 -> stage 1 at the end of the queue; stage 1 -> the practice pool, where the
-    word waits for the typed Saturday practice before it can be archived.
-    """
-    word = _take(queue, word_id, stage)
+def answer_known(queue, practice, word_id, schedule, now, today, stage=None):
+    """«Знаю»: новое слово разворачивается сразу, повтор уходит на следующий интервал."""
+    word = _find(queue, word_id, stage)
     if word is None:
         return NOT_FOUND, None
-    if word.get("stage", 0) == 0:
-        word["stage"] = 1
-        queue.append(word)
-        return FLIPPED, word
-    word["stage"] = PRACTICE_STAGE
-    word["practice_since"] = now or now_iso()
-    practice.append(word)
-    return TO_PRACTICE, word
+    outcome = srs.on_success(word, schedule, now, today)
+    if outcome == "practice":
+        queue.remove(word)
+        word["stage"] = PRACTICE_STAGE
+        word["practice_since"] = now.isoformat()
+        word.pop("due_at", None)
+        practice.append(word)
+        return TO_PRACTICE, word
+    return (FLIPPED if outcome == "flip" else REVIEWED), word
 
 
 def answer_archive(queue, known, word_id, now=None, stage=None):
-    """Apply "В архив": the word skips the remaining steps and the practice."""
-    word = _take(queue, word_id, stage)
+    """«В архив»: слово минует оставшиеся шаги и практику."""
+    word = _find(queue, word_id, stage)
     if word is None:
         return NOT_FOUND, None
+    queue.remove(word)
     word["archived_at"] = now or now_iso()
+    word.pop("due_at", None)
     known.append(word)
     return ARCHIVED, word
 
 
-def answer_unknown(queue, word_id, stage=None):
-    """Apply "Не знаю": stage stays, word goes to index 2 of the queue."""
-    word = _take(queue, word_id, stage)
+def answer_unknown(queue, word_id, schedule, now, today, stage=None):
+    """«Не знаю»: направление то же, слово откладывается по шагам срыва."""
+    word = _find(queue, word_id, stage)
     if word is None:
         return NOT_FOUND, None
-    queue.insert(RETRY_POSITION, word)
+    srs.on_lapse(word, schedule, now, today)
     return REQUEUED, word
 
 
@@ -228,17 +230,19 @@ def parse_numbers(text):
     return [int(token) for token in tokens]
 
 
-def restore_from_known(queue, known, word_ids):
-    """Move forgotten words back to the end of the queue with stage reset to 0."""
+def restore_from_known(queue, known, word_ids, schedule=None, now=None):
+    """Забытые слова возвращаются в обучение с самого начала."""
     restored = []
     for word_id in word_ids:
         index = find_index(known, word_id)
         if index < 0:
             continue
         word = known.pop(index)
-        word["stage"] = 0
-        word["archived_at"] = None
         word.pop("sent_at", None)
+        if schedule is not None and now is not None:
+            srs.reset(word, schedule, now)
+        else:
+            word["stage"], word["archived_at"] = 0, None
         queue.append(word)
         restored.append(word)
     return restored

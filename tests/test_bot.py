@@ -1,9 +1,14 @@
 import asyncio
 import json
 import unittest
+from unittest import mock
+
+from datetime import datetime, timedelta, timezone
 
 from shared import cards
+from shared import words as w
 from shared.bot import Bot
+from shared.schedule import Schedule
 
 OWNER = "OwnerUser"
 CHAT = 1001
@@ -41,6 +46,29 @@ class FakeTelegram:
         return self.sent()[-1]["text"]
 
 
+class FakeClock:
+    """Управляемые часы: бот и shared.words берут время отсюда (см. use_clock)."""
+
+    def __init__(self, moment):
+        self.moment = moment
+
+    def __call__(self):
+        return self.moment
+
+    def set(self, moment):
+        self.moment = moment
+
+
+def use_clock(test, bot, moment):
+    """Привязывает бота и генерацию меток времени к управляемым часам."""
+    clock = FakeClock(moment)
+    bot.clock = clock
+    patcher = mock.patch.object(w, "now_iso", lambda: clock().isoformat(timespec="seconds"))
+    patcher.start()
+    test.addCleanup(patcher.stop)
+    return clock
+
+
 def run(coro):
     return asyncio.run(coro)
 
@@ -49,8 +77,23 @@ class BotTest(unittest.TestCase):
     def setUp(self):
         self.store = FakeStore()
         self.tg = FakeTelegram()
-        self.bot = Bot(self.store, self.tg, owner=OWNER)
+        self.bot = Bot(self.store, self.tg, owner=OWNER, schedule=Schedule())
+        self.clock = use_clock(self, self.bot, datetime(2026, 9, 21, 10, 0, tzinfo=timezone.utc))
         self.update_id = 0
+
+    def advance(self, days=0, hours=0):
+        self.clock.set(self.clock() + timedelta(days=days, hours=hours))
+
+    def learn_until_practice(self, limit=60):
+        """Прогоняет очередь по интервалам, отвечая «Знаю», пока слова не дойдут до практики."""
+        for _ in range(limit):
+            if not self.queue():
+                return
+            if any(x.get("sent_at") for x in self.queue()):
+                self.press("k:" + self.last_card_word())  # ответ на уже присланную карточку
+            elif not run(self.bot.broadcast_cards()):
+                self.advance(days=1)
+        raise AssertionError("слова так и не дошли до практики")
 
     # helpers
     def msg(self, text, username=OWNER, chat_id=CHAT, chat_type="private"):
@@ -152,46 +195,53 @@ class BotTest(unittest.TestCase):
         for word in ["apple - яблоко", "cat - кот", "dog - собака"]:
             self.msg(word)
 
-        # scheduled card: queue[0] = apple, stage 0
+        # карточка по расписанию: первое новое слово, RU→EN
         self.assertEqual(run(self.bot.broadcast_cards()), [OWNER])
         card = self.tg.sent()[-1]
         self.assertTrue(card["text"].startswith("Яблоко - <tg-spoiler>apple</tg-spoiler>"))
-        self.assertNotIn("<i>", card["text"])
         self.assertEqual(card["parse_mode"], "HTML")
         apple_id = self.last_card_word()
         self.assertEqual(self.queue()[0]["shown_count"], 1)
 
-        # "Не знаю" -> index 2, stage stays 0
+        # «Не знаю» — слово остаётся в очереди, но откладывается на 30 минут
         self.press("n:" + apple_id)
-        self.assertEqual([w["en"] for w in self.queue()], ["cat", "dog", "apple"])
-        self.assertEqual(self.queue()[2]["stage"], 0)
+        apple = self.queue()[0]
+        self.assertEqual((apple["en"], apple["stage"], apple["box"]), ("apple", 0, 0))
+        self.assertEqual(apple["due_at"], (self.clock() + timedelta(minutes=30)).isoformat())
         self.assertIn(("editMessageReplyMarkup", {"chat_id": CHAT, "message_id": 77, "reply_markup": {"inline_keyboard": []}}), self.tg.calls)
 
-        # "Знаю" on stage 0 -> stage 1, to the end
+        # «Знаю» на новом слове: вторая сторона приходит сразу
         run(self.bot.broadcast_cards())
         cat_id = self.last_card_word()
         self.press("k:" + cat_id)
-        self.assertEqual([w["en"] for w in self.queue()], ["dog", "apple", "cat"])
-        self.assertEqual(self.queue()[2]["stage"], 1)
+        self.assertTrue(self.tg.sent()[-1]["text"].startswith("Cat - <tg-spoiler>кот</tg-spoiler>"))
+        cat = next(x for x in self.queue() if x["en"] == "cat")
+        self.assertEqual((cat["stage"], cat["box"]), (1, 0))
 
-        # the old RU->EN card of cat is stale now: it must not archive the word
+        # старая кнопка RU→EN для cat больше не работает
         self.press("k:" + cat_id)
         answers = [p for m, p in self.tg.calls if m == "answerCallbackQuery"]
         self.assertEqual(answers[-1]["text"], "Эта карточка уже неактуальна")
-        self.assertEqual(self.known(), [])
 
-        # "Знаю" on the EN->RU card sends it to the practice pool, not yet to the archive
-        cat_word_id = cat_id.split(":")[0]
-        self.press(f"k:{cat_word_id}:1")
+        # «Знаю» на второй стороне: слово уходит на повтор через сутки
+        self.press(f"k:{cat['id']}:1")
+        cat = next(x for x in self.queue() if x["en"] == "cat")
+        self.assertEqual((cat["box"], cat["stage"]), (1, 0))
+        self.assertEqual(cat["due_at"], (self.clock() + timedelta(days=1)).isoformat())
+        answers = [p for m, p in self.tg.calls if m == "answerCallbackQuery"]
+        self.assertIn("вернусь к слову позже", answers[-1]["text"])
+
+        # ещё два успешных повтора — и слово ждёт практики
+        self.advance(days=1)
+        self.press(f"k:{cat['id']}:0")
+        cat = next(x for x in self.queue() if x["en"] == "cat")
+        self.assertEqual(cat["box"], 2)
+        self.advance(days=3)
+        self.press(f"k:{cat['id']}:1")
         self.assertEqual(self.known(), [])
         practice = self.store.json(f"practice:{OWNER.lower()}")
-        self.assertEqual([(w["en"], w["stage"]) for w in practice], [("cat", 2)])
-        answers = [p for m, p in self.tg.calls if m == "answerCallbackQuery"]
-        self.assertIn("субботней практики", answers[-1]["text"])
-        self.press("k:" + cat_id)
-        answers = [p for m, p in self.tg.calls if m == "answerCallbackQuery"]
-        self.assertEqual(answers[-1]["text"], "Эта карточка уже неактуальна")
-        self.assertEqual(len(practice), 1)
+        self.assertEqual([(x["en"], x["stage"]) for x in practice], [("cat", 2)])
+        self.assertNotIn("cat", [x["en"] for x in self.queue()])
 
     def test_no_new_cards_until_answered(self):
         self.msg("/start")
@@ -248,10 +298,7 @@ class BotTest(unittest.TestCase):
     def test_review_flow(self):
         for i, word in enumerate(["one - один", "two - два", "three - три"]):
             self.msg(word)
-        for _ in range(6):  # each word needs two "Знаю", then the practice
-            run(self.bot.broadcast_cards())
-            self.press("k:" + self.last_card_word())
-        self.assertEqual(self.queue(), [])
+        self.learn_until_practice()
         self.practise_all_correct()
         self.assertEqual(len(self.known()), 3)
 
@@ -264,7 +311,7 @@ class BotTest(unittest.TestCase):
 
         self.msg("1 3 9")
         self.assertEqual([w["en"] for w in self.queue()], [order[0], order[2]])
-        self.assertTrue(all(w["stage"] == 0 and w["archived_at"] is None for w in self.queue()))
+        self.assertTrue(all(w["stage"] == 0 and w["box"] == 0 and w["archived_at"] is None for w in self.queue()))
         self.assertEqual([w["en"] for w in self.known()], [order[1]])
         self.assertIn("Нет таких номеров: 9", self.tg.last_text())
 
@@ -309,14 +356,13 @@ class BotTest(unittest.TestCase):
     def test_weekly_stats(self):
         self.msg("/start")
         self.msg("apple - яблоко")
-        for _ in range(2):
-            run(self.bot.broadcast_cards())
-            self.press("k:" + self.last_card_word())
+        self.learn_until_practice()
         self.practise_all_correct()
         self.assertEqual(run(self.bot.broadcast_stats()), [OWNER])
         text = self.tg.last_text()
         self.assertIn("Выучено слов: <b>1</b>", text)
-        self.assertIn("0.0 дн.", text)
+        self.assertIn("4.0 дн.", text)  # сутки + три дня интервалов до практики
+        self.assertIn("Новых слов сегодня: 0 из 6", text)
 
     def test_menu_buttons(self):
         self.msg("/start")

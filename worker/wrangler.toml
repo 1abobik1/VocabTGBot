@@ -12,20 +12,25 @@ command = "rm -rf src/shared && cp -r ../shared src/shared && rm -rf src/shared/
 watch_dir = "../shared"
 
 # ── Card schedule ────────────────────────────────────────────────────────────
-# CARDS_PER_DAY cards, evenly spaced from CARD_START; the step is
-# (CARD_END - CARD_START) / CARDS_PER_DAY. Defaults: 13h / 10 = 78 min →
-# 10:00, 11:18, 12:36, 13:54, 15:12, 16:30, 17:48, 19:06, 20:24, 21:42 MSK.
+# CARDS_PER_DAY slots, evenly spaced from CARD_START; the step is
+# (CARD_END - CARD_START) / CARDS_PER_DAY. Defaults: 13h / 14 = 55 minutes.
+# NEW_WORDS_PER_DAY of those slots are kept for words seen for the first time,
+# so a hard word can no longer eat the whole day; the rest go to words whose
+# interval is due (1 day, then 3 days, then the typed practice).
 # A new card is sent only after the previous one was answered ("Знаю"/"Не знаю").
 # The last card must leave at least 30 minutes before CARD_END, otherwise the
 # Worker refuses the config. Redeploy after changing these values.
 [vars]
 CARD_START = "10:00"
 CARD_END = "23:00"
-CARDS_PER_DAY = "10"
+CARDS_PER_DAY = "14"
+NEW_WORDS_PER_DAY = "6"
 UTC_OFFSET_HOURS = "3"  # Moscow time, no DST
-# Weekly typed practice of words answered "Знаю" in both directions (mon..sun, HH:MM).
-PRACTICE_DAY = "sat"
-PRACTICE_TIME = "09:00"
+# Typed practice at the end of the day: "daily" or a weekday (mon..sun), HH:MM,
+# PRACTICE_BATCH words at a time so an evening session stays short.
+PRACTICE_DAY = "daily"
+PRACTICE_TIME = "22:30"
+PRACTICE_BATCH = "7"
 # Workers AI model for generated cards (free tier: 10,000 neurons/day, ~13 per card).
 AI_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct"
 

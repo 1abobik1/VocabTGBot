@@ -5,11 +5,12 @@
 """
 
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from . import cards
 from . import generator
 from . import practice as pr
+from . import srs
 from .cards import escape
 from . import words as w
 
@@ -48,8 +49,13 @@ def session_key(username):
 
 
 def sched_key(username):
-    """{"missed": n}: slots skipped while a card or the practice waited for an answer."""
+    """{"missed": n, "date": "YYYY-MM-DD", "new": n}: пропущенные слоты и счётчик новых слов за день."""
     return f"sched:{username}"
+
+
+def seen_key(username):
+    """Все английские слова, которые когда-либо попадали пользователю, чтобы ИИ их не повторял."""
+    return f"seen:{username}"
 
 
 # Missed slots are delivered at once after the answer, but never more than this many.
@@ -58,6 +64,8 @@ DEFAULT_CATCH_UP_LIMIT = 10
 
 # Auto-generation runs this long before a slot when the queue is empty.
 AUTOGEN_LEAD = timedelta(minutes=20)
+# Сколько слов помнить в списке "уже было" (защита от повторов при генерации).
+SEEN_LIMIT = 2000
 
 
 def normalize_username(name):
@@ -96,7 +104,7 @@ def find_user(users, username):
 
 
 class Bot:
-    def __init__(self, store, tg, owner=None, schedule=None, ai=None, ai_model=None):
+    def __init__(self, store, tg, owner=None, schedule=None, ai=None, ai_model=None, clock=None):
         """`owner` is the Telegram username that seeds allowed_users on the first message.
 
         `schedule` (shared.schedule.Schedule) enables sending a card right after an answer
@@ -109,6 +117,8 @@ class Bot:
         self.schedule = schedule
         self.ai = ai
         self.ai_model = ai_model or generator.DEFAULT_MODEL
+        # Подменяется в тестах, чтобы проигрывать расписание без ожидания.
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
         # Chat whose reply keyboard is outdated: the next plain reply carries the new one.
         self._keyboard_refresh_chat = self._keyboard_refresh_user = None
 
@@ -131,35 +141,76 @@ class Bot:
         settings["keyboard"] = cards.KEYBOARD_VERSION
         await self.repo.put(settings_key(username), settings)
 
-    async def send_card(self, username, chat_id):
-        """Send queue[0] to the user and bump its shown_count. Returns the word or None."""
-        sent = await self.send_cards(username, chat_id, 1, include_pending=True)
+    async def send_card(self, username, chat_id, now=None):
+        """Карточку прямо сейчас: если есть неотвеченная, присылает её повторно."""
+        name = normalize_username(username)
+        queue = await self.repo.get(queue_key(name), [])
+        pending = next((x for x in queue if x.get("sent_at")), None)
+        if pending is not None:
+            await self._deliver(name, chat_id, [pending], queue, now or self._now())
+            return pending
+        sent = await self.send_cards(username, chat_id, 1, now=now)
         return sent[0] if sent else None
 
-    async def send_cards(self, username, chat_id, count, include_pending=False):
-        """Send up to `count` cards from the front of the queue; each one then awaits an answer.
-
-        Cards already waiting for an answer are skipped unless `include_pending` (used by /next
-        to re-send the current card).
-        """
-        key = queue_key(normalize_username(username))
-        queue = await self.repo.get(key, [])
-        chosen = [x for x in queue if include_pending or not x.get("sent_at")][:count]
-        for word in chosen:
-            await self.send(chat_id, cards.render_card(word), cards.card_keyboard(word))
-            word["shown_count"] = word.get("shown_count", 0) + 1
-            # Marks the card as awaiting an answer: no new scheduled cards until it is answered.
-            word["sent_at"] = w.now_iso()
+    async def send_cards(self, username, chat_id, count, now=None):
+        """До `count` карточек: сначала новые слова в рамках дневной квоты, затем созревшие повторы."""
+        name = normalize_username(username)
+        now = now or self._now()
+        today = srs.local_date(self.schedule, now) if self.schedule else ""
+        key = queue_key(name)
+        queue = [srs.prepare(x, now) for x in await self.repo.get(key, [])]
+        day = await self._day_state(name, today)
+        chosen = []
+        for _ in range(count):
+            word = srs.pick_next(queue, now, today, day["new"], self._new_quota(), exclude=chosen)
+            if word is None:
+                break
+            if srs.is_new(word):
+                day["new"] += 1
+            chosen.append(word)
         if chosen:
-            await self.repo.put(key, queue)
+            await self._deliver(name, chat_id, chosen, queue, now, today)
+            await self.repo.put(sched_key(name), day)
         return chosen
+
+    async def _deliver(self, username, chat_id, words, queue, now, today=None):
+        today = today or (srs.local_date(self.schedule, now) if self.schedule else "")
+        for word in words:
+            await self.send(chat_id, cards.render_card(word), cards.card_keyboard(word))
+            srs.note_shown(word, today)
+            # Пока на карточку нет ответа, новые по расписанию не приходят.
+            word["sent_at"] = w.now_iso()
+        await self.repo.put(queue_key(username), queue)
+
+    def _now(self):
+        return self.clock()
+
+    def _new_quota(self):
+        return self.schedule.new_words_per_day if self.schedule else 6
+
+    async def _day_state(self, username, today):
+        """Счётчики за день: сколько новых слов отправлено и сколько слотов пропущено."""
+        state = await self.repo.get(sched_key(username), {})
+        if state.get("date") != today:
+            state = {"date": today, "new": 0, "missed": state.get("missed", 0)}
+        state.setdefault("new", 0)
+        state.setdefault("missed", 0)
+        return state
 
     async def send_stats(self, username, chat_id):
         name = normalize_username(username)
+        now = self._now()
+        today = srs.local_date(self.schedule, now) if self.schedule else ""
         known = await self.repo.get(known_key(name), [])
-        queue = await self.repo.get(queue_key(name), [])
+        queue = [srs.prepare(x, now) for x in await self.repo.get(queue_key(name), [])]
         waiting = await self.repo.get(practice_key(name), [])
-        await self.send(chat_id, cards.render_stats(w.weekly_stats(known), len(queue), len(waiting)))
+        day = await self._day_state(name, today)
+        await self.send(
+            chat_id,
+            cards.render_stats(
+                w.weekly_stats(known), srs.stats(queue, now, today), len(waiting), day["new"], self._new_quota()
+            ),
+        )
 
     async def _is_blocked(self, username, queue):
         """New cards wait while a card is unanswered or the practice is running."""
@@ -169,16 +220,19 @@ class Bot:
         return self.schedule.cards_per_day if self.schedule else DEFAULT_CATCH_UP_LIMIT
 
     async def _catch_up(self, username, chat_id):
-        """After the last answer, send every card whose slot was skipped while waiting."""
-        missed = (await self.repo.get(sched_key(username), {})).get("missed", 0)
-        if not missed:
+        """После ответа присылает карточки за слоты, пропущенные из-за ожидания."""
+        now = self._now()
+        today = srs.local_date(self.schedule, now) if self.schedule else ""
+        day = await self._day_state(username, today)
+        if not day["missed"]:
             return []
         queue = await self.repo.get(queue_key(username), [])
         if await self._is_blocked(username, queue):
             return []
-        await self.repo.put(sched_key(username), {"missed": 0})
-        sent = await self.send_cards(username, chat_id, missed)
-        return sent
+        missed = day["missed"]
+        day["missed"] = 0
+        await self.repo.put(sched_key(username), day)
+        return await self.send_cards(username, chat_id, missed, now=now)
 
     # ---- scheduled jobs (Worker cron, GitHub Actions) ---------------------
 
@@ -187,22 +241,20 @@ class Bot:
         users = await self.repo.get(ALLOWED_USERS_KEY, [])
         return [u for u in users if u.get("chat_id")]
 
-    async def broadcast_cards(self, count_missed=False):
-        """Send the next card to every user who is not waiting on an answer.
-
-        With `count_missed` (schedule slots) a blocked user's slot is remembered and the card
-        is delivered right after the answer (see _catch_up).
-        """
+    async def broadcast_cards(self, count_missed=False, now=None):
+        """Карточка каждому, кто не ждёт ответа; занятому слот записывается в долг."""
+        now = now or self._now()
+        today = srs.local_date(self.schedule, now) if self.schedule else ""
         sent = []
         for user in await self._users_with_chat():
             name = normalize_username(user["username"])
             queue = await self.repo.get(queue_key(name), [])
             if await self._is_blocked(name, queue):
                 if count_missed:
-                    missed = (await self.repo.get(sched_key(name), {})).get("missed", 0)
-                    await self.repo.put(sched_key(name), {"missed": min(missed + 1, self._catch_up_limit())})
-            elif queue:
-                await self.send_card(user["username"], user["chat_id"])
+                    day = await self._day_state(name, today)
+                    day["missed"] = min(day["missed"] + 1, self._catch_up_limit())
+                    await self.repo.put(sched_key(name), day)
+            elif await self.send_cards(user["username"], user["chat_id"], 1, now=now):
                 sent.append(user["username"])
         return sent
 
@@ -217,7 +269,7 @@ class Bot:
                 if await self.start_practice(normalize_username(user["username"]), user["chat_id"], quiet=True):
                     result.append(user["username"])
         if self.schedule.is_slot(now):
-            result += await self.broadcast_cards(count_missed=True)
+            result += await self.broadcast_cards(count_missed=True, now=now)
         elif self.ai is not None and self.schedule.is_slot(now + AUTOGEN_LEAD):
             result += await self.autogenerate()
         return result
@@ -316,22 +368,25 @@ class Bot:
             return
         stage = int(stage) if stage else None
 
-        queue = await self.repo.get(queue_key(username), [])
+        now = self._now()
+        today = srs.local_date(self.schedule, now) if self.schedule else ""
+        queue = [srs.prepare(x, now) for x in await self.repo.get(queue_key(username), [])]
         waiting = known = None
         if action == "k":
             waiting = await self.repo.get(practice_key(username), [])
-            result, word = w.answer_known(queue, waiting, word_id, stage=stage)
+            result, word = w.answer_known(queue, waiting, word_id, self.schedule, now, today, stage=stage)
         elif action == "a":
             known = await self.repo.get(known_key(username), [])
-            result, word = w.answer_archive(queue, known, word_id, stage=stage)
+            result, word = w.answer_archive(queue, known, word_id, now=now.isoformat(), stage=stage)
         else:
-            result, word = w.answer_unknown(queue, word_id, stage=stage)
+            result, word = w.answer_unknown(queue, word_id, self.schedule, now, today, stage=stage)
 
         notices = {
-            w.FLIPPED: "👍 Теперь проверю в обратную сторону",
-            w.TO_PRACTICE: "🎯 Отлично! Слово ждёт субботней практики",
+            w.FLIPPED: "👍 Теперь в обратную сторону",
+            w.REVIEWED: "✅ Отлично, вернусь к слову позже",
+            w.TO_PRACTICE: "🎯 Интервалы пройдены — слово ждёт практики",
             w.ARCHIVED: "📥 Слово сразу в архиве",
-            w.REQUEUED: "🔁 Слово вернётся через пару карточек",
+            w.REQUEUED: "🔁 Слово вернётся сегодня же",
             w.NOT_FOUND: "Эта карточка уже неактуальна",
         }
         if result != w.NOT_FOUND:
@@ -345,7 +400,10 @@ class Bot:
         if message_id is not None:
             # Drop the buttons so the same card can't be answered twice.
             await self._drop_buttons(chat_id, message_id)
-        if result != w.NOT_FOUND:
+        if result == w.FLIPPED:
+            # Вторая сторона нового слова идёт сразу, в этом же слоте.
+            await self._deliver(username, chat_id, [word], queue, now, today)
+        elif result != w.NOT_FOUND:
             await self._catch_up(username, chat_id)
 
     async def _drop_buttons(self, chat_id, message_id):
@@ -436,6 +494,7 @@ class Bot:
                 return
         queue.append(w.new_word(en, ru, examples, synonyms))
         await self.repo.put(queue_key(username), queue)
+        await self._remember_seen(username, [en])
         await self.send(
             chat_id,
             f"➕ Добавлено: <b>{escape(en)}</b> — {escape(ru)}\n"
@@ -454,6 +513,7 @@ class Bot:
             return False  # fall back to adding the bare word
         word = w.new_word(en, ru, examples, synonyms)
         word["source"] = "manual"
+        await self._remember_seen(username, [en])
         inbox = await self.repo.get(inbox_key(username), [])
         inbox.append(word)
         await self.repo.put(inbox_key(username), inbox)
@@ -486,7 +546,7 @@ class Bot:
         bad = [str(n) for n in numbers if not 1 <= n <= len(ids)]
         queue = await self.repo.get(queue_key(username), [])
         known = await self.repo.get(known_key(username), [])
-        restored = w.restore_from_known(queue, known, chosen)
+        restored = w.restore_from_known(queue, known, chosen, self.schedule, self._now())
         if restored:
             await self.repo.put(queue_key(username), queue)
             await self.repo.put(known_key(username), known)
@@ -498,6 +558,29 @@ class Bot:
         await self.send(chat_id, "\n".join(lines), cards.main_keyboard())
 
     # ---- AI generation and the review inbox ---------------------------------
+
+    async def _seen(self, username):
+        """Английские слова, которые уже были у пользователя: очередь, архив, практика, входящие
+        и всё, что ИИ предлагал раньше, даже если карточку удалили."""
+        stored = await self.repo.get(seen_key(username), [])
+        current = [
+            x["en"]
+            for key in (queue_key, known_key, practice_key, inbox_key)
+            for x in await self.repo.get(key(username), [])
+        ]
+        seen, result = set(), []
+        for en in stored + current:
+            key = w.compact(en)
+            if key not in seen:
+                seen.add(key)
+                result.append(en)
+        return result[-SEEN_LIMIT:]
+
+    async def _remember_seen(self, username, words):
+        seen = await self._seen(username)
+        known = {w.compact(x) for x in seen}
+        seen += [x for x in words if w.compact(x) not in known]
+        await self.repo.put(seen_key(username), seen[-SEEN_LIMIT:])
 
     async def _level(self, username):
         settings = await self.repo.get(settings_key(username), {})
@@ -554,10 +637,7 @@ class Bot:
         if not auto:
             about = f", тема: {escape(topic)}" if topic else ""
             await self.send(chat_id, f"⏳ Генерирую {count} шт. (уровень {level}{about})…")
-        queue = await self.repo.get(queue_key(username), [])
-        known = await self.repo.get(known_key(username), [])
-        inbox = await self.repo.get(inbox_key(username), [])
-        existing = [x["en"] for x in known + queue + inbox]
+        existing = await self._seen(username)
         try:
             new_cards = await generator.generate(self.ai, level, count, topic, existing, model=self.ai_model)
         except Exception as error:  # the model or the network failed
@@ -571,6 +651,8 @@ class Bot:
             card["level"] = level
             if topic:
                 card["topic"] = topic
+        await self._remember_seen(username, [c["en"] for c in new_cards])
+        inbox = await self.repo.get(inbox_key(username), [])
         inbox += new_cards
         await self.repo.put(inbox_key(username), inbox)
         if not auto and len(new_cards) < count:
@@ -681,9 +763,11 @@ class Bot:
         waiting = await self.repo.get(practice_key(username), [])
         if not waiting:
             return False
-        session = {"ids": [x["id"] for x in waiting], "round": pr.RU_EN, "results": {}}
+        # Практика идёт небольшими порциями, чтобы вечерняя сессия была на пару минут.
+        batch = waiting[: self.schedule.practice_batch] if self.schedule else waiting
+        session = {"ids": [x["id"] for x in batch], "round": pr.RU_EN, "results": {}}
         await self.repo.put(session_key(username), session)
-        await self._send_practice_round(chat_id, waiting, pr.RU_EN)
+        await self._send_practice_round(chat_id, batch, pr.RU_EN)
         return True
 
     async def _send_practice_round(self, chat_id, words, round_name):
@@ -721,10 +805,10 @@ class Bot:
             reference = [w.current_example(x)["en"] for x in words if w.current_example(x)]
             lines = ["Сверь с эталоном:"] + [f"{i}) {escape(t)}" for i, t in enumerate(reference, start=1)]
             await self.send(chat_id, "\n".join(lines))
-        queue = await self.repo.get(queue_key(username), [])
+        queue = [srs.prepare(x, self._now()) for x in await self.repo.get(queue_key(username), [])]
         known = await self.repo.get(known_key(username), [])
         waiting = await self.repo.get(practice_key(username), [])
-        outcome = pr.apply_results(queue, known, waiting, session["results"], w.now_iso())
+        outcome = pr.apply_results(queue, known, waiting, session["results"], self.schedule, self._now())
         await self.repo.put(queue_key(username), queue)
         await self.repo.put(known_key(username), known)
         await self.repo.put(practice_key(username), waiting)

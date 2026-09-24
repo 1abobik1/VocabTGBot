@@ -285,6 +285,32 @@ class InboxFlowTest(unittest.TestCase):
         self.assertTrue(any("Получилось 1 из 3" in t for t in texts))
         self.assertEqual(len(self.key("inbox")), 1)
 
+    def test_generated_word_is_never_offered_twice(self):
+        self.msg("/start")
+        self.ai.responses.append({"response": {"cards": [card("burnout", "выгорание")]}})
+        self.msg("/gen 1")
+        self.assertEqual(self.key("seen"), ["burnout"])
+
+        # карточку удалили — слово всё равно считается показанным
+        self.press(self.inbox_buttons()["🗑 Удалить"])
+        self.assertEqual(self.key("inbox"), [])
+        self.assertIn("burnout", self.key("seen"))
+        self.ai.responses.append({"response": {"cards": [card("burnout", "выгорание"), card("chill", "отдыхать")]}})
+        self.ai.responses.append({"response": {"cards": [card("commit", "закоммитить")]}})
+        self.msg("/gen 2")
+        self.assertIn("burnout", self.ai.calls[-1][1]["messages"][0]["content"])  # в промпте как запрет
+        self.assertEqual([c["en"] for c in self.key("inbox")], ["chill", "commit"])  # дубль отброшен
+
+    def test_manual_and_archived_words_are_remembered_too(self):
+        self.msg("/start")
+        self.msg("apple - яблоко\nI ate an apple. - Я съел яблоко.")
+        self.assertEqual(self.key("seen"), ["apple"])
+        asyncio.run(self.bot.repo.put(f"known:{OWNER.lower()}", [w.new_word("gone", "ушедшее")]))
+        asyncio.run(self.bot.repo.put(f"queue:{OWNER.lower()}", []))
+        self.ai.responses.append({"response": {"cards": [card("gone", "ушедшее"), card("chill", "отдыхать")]}})
+        self.msg("/gen 1")
+        self.assertEqual([c["en"] for c in self.key("inbox")], ["chill"])
+
     def test_generation_failure(self):
         self.msg("/start")
         self.ai.responses += [RuntimeError("boom"), RuntimeError("boom")]

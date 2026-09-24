@@ -1,9 +1,10 @@
 """When cards are due: CARDS_PER_DAY evenly spaced slots inside a daily window.
 
-With the defaults (10:00-23:00 MSK, 10 cards) the step is 13h / 10 = 78 minutes:
-10:00, 11:18, 12:36, 13:54, 15:12, 16:30, 17:48, 19:06, 20:24, 21:42.
+With the defaults (10:00-23:00 MSK, 14 cards) the step is 13h / 14 = 55 minutes.
 The Worker cron fires every minute and sends a card only when the minute is a slot.
-The weekly typed practice starts at PRACTICE_TIME on PRACTICE_DAY (default Saturday 09:00).
+NEW_WORDS_PER_DAY of those slots are reserved for words seen for the first time.
+The typed practice runs at PRACTICE_TIME (default 22:00) every day, or on PRACTICE_DAY
+only, and takes at most PRACTICE_BATCH words at a time.
 """
 
 from datetime import timedelta, timezone
@@ -17,15 +18,27 @@ def _parse_hhmm(value):
     return int(hours) * 60 + int(minutes)
 
 
+# "daily" (каждый день) или день недели.
 WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
 
 class Schedule:
     def __init__(
-        self, start="10:00", end="23:00", cards_per_day=10, utc_offset_hours=3, practice_day="sat", practice_time="09:00"
+        self,
+        start="10:00",
+        end="23:00",
+        cards_per_day=14,
+        utc_offset_hours=3,
+        practice_day="daily",
+        practice_time="22:30",
+        new_words_per_day=6,
+        practice_batch=7,
     ):
-        self.practice_day = WEEKDAYS[str(practice_day).strip().lower()[:3]]
+        day = str(practice_day).strip().lower()[:3]
+        self.practice_day = None if day in ("dai", "eve", "all", "") else WEEKDAYS[day]
         self.practice_time = _parse_hhmm(practice_time)
+        self.new_words_per_day = int(new_words_per_day)
+        self.practice_batch = int(practice_batch)
         self.start = _parse_hhmm(start)
         self.end = _parse_hhmm(end)
         self.cards_per_day = int(cards_per_day)
@@ -48,11 +61,15 @@ class Schedule:
             "utc_offset_hours": env_get("UTC_OFFSET_HOURS"),
             "practice_day": env_get("PRACTICE_DAY"),
             "practice_time": env_get("PRACTICE_TIME"),
+            "new_words_per_day": env_get("NEW_WORDS_PER_DAY"),
+            "practice_batch": env_get("PRACTICE_BATCH"),
         }
         return cls(**{k: v for k, v in kwargs.items() if v not in (None, "")})
 
-    def _local(self, now):
+    def local(self, now):
         return now.astimezone(self.tz)
+
+    _local = local
 
     def is_slot(self, now):
         local = self._local(now)
@@ -60,7 +77,9 @@ class Schedule:
 
     def is_practice_time(self, now):
         local = self._local(now)
-        return local.weekday() == self.practice_day and local.hour * 60 + local.minute == self.practice_time
+        if self.practice_day is not None and local.weekday() != self.practice_day:
+            return False
+        return local.hour * 60 + local.minute == self.practice_time
 
     def describe(self):
         return ", ".join(f"{s // 60:02d}:{s % 60:02d}" for s in self.slots)

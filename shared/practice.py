@@ -1,11 +1,13 @@
 """Saturday practice: typed translations of learned words, graded with typo tolerance.
 
-A word reaches practice after "Знаю" in both directions. In practice it is typed
-RU→EN and EN→RU. Both correct: archived. A typo (1-2 letters): back into the queue
-second, for one more EN→RU card. Wrong: reset to RU→EN, third in the queue.
+Слово попадает сюда, пройдя интервальные повторы. На практике его нужно написать
+RU→EN и EN→RU. Всё верно — в архив. Опечатка (1–2 буквы) — завтра ещё одна карточка
+EN→RU. Ошибка — слово учится заново с RU→EN.
 """
 
 import re
+
+from . import srs
 
 OK = "ok"
 NEAR = "near"
@@ -15,8 +17,7 @@ RU_EN = "ru_en"  # Russian shown, English typed
 EN_RU = "en_ru"  # English shown, Russian typed
 DIRECTIONS = (RU_EN, EN_RU)
 
-NEAR_POSITION = 1   # "вторым для повторения"
-WRONG_POSITION = 2  # "третьей в очередь"
+
 
 _NUMBERING = re.compile(r"^\s*\d+\s*[).:\-–—]?\s+|^\s*\d+\s*[).:]\s*")
 _PARENS = re.compile(r"\([^)]*\)")
@@ -144,10 +145,10 @@ def final_verdict(results):
     return NEAR if NEAR in verdicts else OK
 
 
-def apply_results(queue, known, practice, results, now):
-    """Move practised words: OK -> known, NEAR -> queue[1] at stage 1, WRONG -> queue[2] at stage 0.
+def apply_results(queue, known, practice, results, schedule, now):
+    """OK -> архив, NEAR -> завтра ещё одна карточка EN→RU, WRONG -> слово учится заново.
 
-    `results` maps word id -> {direction: verdict}. Returns {verdict: [words]}.
+    `results`: id слова -> {направление: вердикт}. Возвращает {вердикт: [слова]}.
     """
     outcome = {OK: [], NEAR: [], WRONG: []}
     for word_id, per_direction in results.items():
@@ -158,13 +159,13 @@ def apply_results(queue, known, practice, results, now):
         verdict = final_verdict(per_direction)
         word.pop("practice_since", None)
         if verdict == OK:
-            word["archived_at"] = now
+            word["archived_at"] = now.isoformat()
+            word.pop("due_at", None)
             known.append(word)
-        elif verdict == NEAR:
-            word["stage"] = 1
-            queue.insert(NEAR_POSITION, word)
         else:
-            word["stage"] = 0
-            queue.insert(WRONG_POSITION, word)
+            # Опечатка -> сразу вторая сторона, ошибка -> с начала; в обоих случаях завтра утром.
+            srs.reset(word, schedule, now, hard=verdict == WRONG)
+            srs.postpone_to_tomorrow(word, schedule, now)
+            queue.append(word)
         outcome[verdict].append(word)
     return outcome

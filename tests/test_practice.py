@@ -3,10 +3,11 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from shared import practice as pr
+from shared import srs
 from shared import words as w
 from shared.bot import Bot
 from shared.schedule import Schedule
-from tests.test_bot import CHAT, OWNER, FakeStore, FakeTelegram
+from tests.test_bot import CHAT, OWNER, FakeStore, FakeTelegram, use_clock
 
 MSK = timezone(timedelta(hours=3))
 SATURDAY = (2026, 9, 26)
@@ -72,11 +73,15 @@ class GradingTest(unittest.TestCase):
             b["id"]: {pr.RU_EN: pr.NEAR, pr.EN_RU: pr.OK},
             c["id"]: {pr.RU_EN: pr.OK, pr.EN_RU: pr.WRONG},
         }
-        outcome = pr.apply_results(queue, known, practice, results, "2026-09-26T09:30:00+03:00")
+        now = datetime(2026, 9, 26, 22, 30, tzinfo=MSK)
+        outcome = pr.apply_results(queue, known, practice, results, Schedule(), now)
         self.assertEqual([x["en"] for x in known], ["a"])
-        self.assertEqual(a["archived_at"], "2026-09-26T09:30:00+03:00")
-        self.assertEqual([x["en"] for x in queue], ["q1", "b", "c", "q2", "q3"])
+        self.assertEqual(a["archived_at"], now.isoformat())
+        self.assertEqual([x["en"] for x in queue], ["q1", "q2", "q3", "b", "c"])
         self.assertEqual((b["stage"], c["stage"]), (1, 0))
+        # опечатка и ошибка возвращаются в обучение завтра утром, а не в тот же вечер
+        for word in (b, c):
+            self.assertEqual((word["box"], word["due_at"]), (0, "2026-09-27T10:00:00+03:00"))
         self.assertEqual(practice, [])
         self.assertEqual({k: [x["en"] for x in v] for k, v in outcome.items()}, {"ok": ["a"], "near": ["b"], "wrong": ["c"]})
 
@@ -85,6 +90,7 @@ class PracticeFlowTest(unittest.TestCase):
     def setUp(self):
         self.store, self.tg = FakeStore(), FakeTelegram()
         self.bot = Bot(self.store, self.tg, owner=OWNER, schedule=Schedule())
+        self.clock = use_clock(self, self.bot, at(8, 0))
         self.n = 0
         self.msg("/start")
 
@@ -101,6 +107,7 @@ class PracticeFlowTest(unittest.TestCase):
             "message": {"message_id": 7, "chat": {"id": CHAT, "type": "private"}}, "data": data}}))
 
     def tick(self, when):
+        self.clock.set(when)
         return asyncio.run(self.bot.on_cron(when))
 
     def get(self, name):
@@ -121,7 +128,7 @@ class PracticeFlowTest(unittest.TestCase):
         self.put("practice", words)
         return words
 
-    def test_saturday_practice_full_flow(self):
+    def test_evening_practice_full_flow(self):
         self.seed_practice([
             ("loud", "звонкий", ("The bell is loud.", "Звонок громкий.")),
             ("silence", "тишина", None),
@@ -130,29 +137,28 @@ class PracticeFlowTest(unittest.TestCase):
         ])
         self.put("queue", [w.new_word(n, n + "_ru") for n in ("q1", "q2", "q3", "q4", "q5")])
 
-        self.assertEqual(self.tick(at(8, 59)), [])
-        self.assertEqual(self.tick(at(9, 0)), [OWNER])
+        self.assertEqual(self.tick(at(22, 29)), [])
+        self.assertEqual(self.tick(at(22, 30)), [OWNER])  # практика каждый день в конце дня
         round1 = self.tg.last_text()
         self.assertIn("1/3.</b> Напиши по-английски", round1)
         self.assertIn("1) Звонкий\n2) Тишина\n3) Сразу поладить\n4) Звук", round1)
 
-        # 10:00 and 11:18 slots are skipped while the practice waits
-        self.tick(at(10, 0))
-        self.tick(at(11, 18))
+        # слот, попавший на практику, уходит в долг
+        self.tick(at(22, 4))
         self.assertEqual(self.cards_sent(), [])
-        self.assertEqual(self.get("sched"), {"missed": 2})
+        self.assertEqual(self.get("sched")["missed"], 1)
 
-        self.msg("loud silense hit it off sound")  # typo in "silence"
+        self.msg("loud silense hit it off sound")  # опечатка в "silence"
         self.assertIn("2) 🟡 silense → <b>silence</b>", self.tg.sent()[-2]["text"])
         self.assertIn("2/3.</b> Теперь по-русски", self.tg.last_text())
 
-        self.msg("звонкий, тишина, поладить, тихий")  # 3 is wrong-ish, 4 wrong
+        self.msg("звонкий, тишина, поладить, тихий")  # 3 почти, 4 неверно
         self.assertIn("4) ❌ тихий → <b>звук</b>", self.tg.sent()[-2]["text"])
         sentences = self.tg.last_text()
         self.assertIn("3/3.</b> Предложения", sentences)
         self.assertIn("1) Звонок громкий.\n<tg-spoiler>The bell is loud.</tg-spoiler>", sentences)
 
-        self.msg("The bell is loud")  # optional sentence answer
+        self.msg("The bell is loud")  # предложения по желанию
         texts = [p["text"] for p in self.tg.sent()[-5:]]
         self.assertTrue(any("Сверь с эталоном:\n1) The bell is loud." in t for t in texts))
         self.assertTrue(any("В архив: loud" in t for t in texts))
@@ -160,14 +166,28 @@ class PracticeFlowTest(unittest.TestCase):
         self.assertEqual([x["en"] for x in self.get("known")], ["loud"])
         self.assertEqual(self.get("practice"), [])
         self.assertEqual(self.get("session"), {})
-        queue = self.get("queue")
-        # silence (typo) second at stage 1; hit it off and sound (wrong) third at stage 0
-        self.assertEqual([x["en"] for x in queue[:4]], ["q1", "silence", "sound", "hit it off"])
-        self.assertEqual([x["stage"] for x in queue[1:4]], [1, 0, 0])
+        # опечатка -> завтра EN→RU, ошибки -> завтра с самого начала
+        back = {x["en"]: x for x in self.get("queue") if x["en"] in ("silence", "sound", "hit it off")}
+        self.assertEqual(back["silence"]["stage"], 1)
+        self.assertEqual((back["sound"]["stage"], back["hit it off"]["stage"]), (0, 0))
+        for word in back.values():
+            self.assertEqual(word["due_at"], "2026-09-27T10:00:00+03:00")
 
-        # the two skipped slots are delivered at once
-        self.assertEqual(len(self.cards_sent()), 2)
-        self.assertEqual(self.get("sched"), {"missed": 0})
+        # пропущенный слот доезжает сразу после практики
+        self.assertEqual(len(self.cards_sent()), 1)
+        self.assertEqual(self.get("sched")["missed"], 0)
+
+    def test_practice_takes_words_in_batches(self):
+        self.bot.schedule = Schedule(practice_batch=2)
+        self.seed_practice([(f"w{i}", f"с{i}", None) for i in range(5)])
+        self.tick(at(22, 30))
+        self.assertEqual(len(self.get("session")["ids"]), 2)
+        self.assertIn("🧠 <b>Практика</b> — 2 сл.", self.tg.last_text())
+        self.msg("w0 w1")
+        self.msg("с0 с1")
+        self.assertEqual(self.get("session"), {})
+        self.assertEqual(len(self.get("known")), 2)
+        self.assertEqual(len(self.get("practice")), 3)  # остальные ждут следующего вечера
 
     def test_skip_sentences_button(self):
         self.seed_practice([("loud", "звонкий", ("The bell is loud.", "Звонок громкий."))])
@@ -189,12 +209,12 @@ class PracticeFlowTest(unittest.TestCase):
     def test_practice_without_words(self):
         self.msg("/practice")
         self.assertIn("пока нет слов", self.tg.last_text())
-        self.assertEqual(self.tick(at(9, 0)), [])
+        self.assertEqual(self.tick(at(22, 30)), [])
 
-    def test_unfinished_practice_is_reminded_next_saturday(self):
+    def test_unfinished_practice_is_reminded_next_evening(self):
         self.seed_practice([("silence", "тишина", None)])
-        self.tick(at(9, 0))
-        self.tick(at(9, 0, day=(2026, 10, 3)))
+        self.tick(at(22, 30))
+        self.tick(at(22, 30, day=(2026, 9, 27)))
         self.assertIn("Напиши по-английски", self.tg.last_text())
         self.assertIn("ещё не закончена", self.tg.sent()[-2]["text"])
 
@@ -210,12 +230,18 @@ class CatchUpTest(unittest.TestCase):
     def setUp(self):
         self.store, self.tg = FakeStore(), FakeTelegram()
         self.bot = Bot(self.store, self.tg, owner=OWNER, schedule=Schedule())
+        self.clock = use_clock(self, self.bot, datetime(2026, 9, 21, 8, 0, tzinfo=MSK))
         asyncio.run(self.bot.handle_update({"message": {"message_id": 1, "from": {"id": CHAT, "username": OWNER},
                                                         "chat": {"id": CHAT, "type": "private"}, "text": "/start"}}))
-        asyncio.run(self.bot.repo.put(f"queue:{KEY}", [w.new_word(f"w{i}", f"с{i}") for i in range(15)]))
+        asyncio.run(self.bot.repo.put(f"queue:{KEY}", [w.new_word(f"w{i}", f"с{i}") for i in range(20)]))
+
+    SLOTS = [(10, 0), (10, 55), (11, 51), (12, 47), (13, 42), (14, 38), (15, 34),
+             (16, 30), (17, 25), (18, 21), (19, 17), (20, 12), (21, 8), (22, 4)]
 
     def tick(self, h, m, day=(2026, 9, 21)):
-        asyncio.run(self.bot.on_cron(datetime(*day, h, m, tzinfo=MSK)))
+        when = datetime(*day, h, m, tzinfo=MSK)
+        self.clock.set(when)
+        asyncio.run(self.bot.on_cron(when))
 
     def cards(self):
         return [p for p in self.tg.sent() if "reply_markup" in p and p["reply_markup"].get("inline_keyboard", [[{}]])[0][0].get("callback_data", "").startswith("k:")]
@@ -226,36 +252,38 @@ class CatchUpTest(unittest.TestCase):
                                                                "message": {"message_id": 3, "chat": {"id": CHAT, "type": "private"}}, "data": data}}))
 
     def test_whole_day_unanswered_sends_all_missed_at_once(self):
-        slots = [(10, 0), (11, 18), (12, 36), (13, 54), (15, 12), (16, 30), (17, 48), (19, 6), (20, 24), (21, 42)]
-        for h, m in slots:
+        for h, m in self.SLOTS:
             self.tick(h, m)
-        self.assertEqual(len(self.cards()), 1)  # only the 10:00 card, the other 9 slots were skipped
-        self.answer(self.cards()[0], "k")
+        self.assertEqual(len(self.cards()), 1)  # только карточка 10:00, остальные слоты пропущены
+        self.assertEqual(self.store.json(f"sched:{KEY}")["missed"], 13)
+        self.answer(self.cards()[0], "n")
         batch = self.cards()[1:]
-        self.assertEqual(len(batch), 9)
-        self.assertEqual(len({c["text"] for c in batch}), 9)  # nine different words
-        # the batch is pending: the next slot is skipped again until all of them are answered
+        # долг закрывается пачкой, но дневная квота новых слов (6) не превышается
+        self.assertEqual(len(batch), 5)
+        self.assertEqual(len({c["text"] for c in batch}), 5)
+        self.assertEqual(self.store.json(f"sched:{KEY}")["new"], 6)
+        # пачка ждёт ответов: следующий слот снова уходит в долг
         self.tick(10, 0, day=(2026, 9, 22))
-        self.assertEqual(len(self.cards()), 10)
+        self.assertEqual(len(self.cards()), 6)
 
     def test_missed_count_is_capped_at_cards_per_day(self):
         self.tick(10, 0)
         for day in (21, 22, 23):
-            for h, m in [(11, 18), (12, 36), (13, 54), (15, 12), (16, 30), (17, 48), (19, 6), (20, 24), (21, 42)]:
+            for h, m in self.SLOTS[1:]:
                 self.tick(h, m, day=(2026, 9, day))
-        self.assertEqual(self.store.json(f"sched:{KEY}"), {"missed": 10})
-        self.answer(self.cards()[0])
-        self.assertEqual(len(self.cards()), 11)
+        self.assertEqual(self.store.json(f"sched:{KEY}")["missed"], 14)
+        self.answer(self.cards()[0], "n")
+        self.assertEqual(len(self.cards()), 7)  # 1 + 5 новых до квоты + отложенное первое слово
 
     def test_batch_answered_one_by_one_then_nothing_extra(self):
         self.tick(10, 0)
-        self.tick(11, 18)
-        self.tick(12, 36)
-        self.answer(self.cards()[0])
+        self.tick(10, 55)
+        self.tick(11, 51)
+        self.answer(self.cards()[0], "n")
         self.assertEqual(len(self.cards()), 3)
         for card in self.cards()[1:]:
-            self.answer(card)
-        self.assertEqual(len(self.cards()), 3)  # no debt left
+            self.answer(card, "n")
+        self.assertEqual(len(self.cards()), 3)  # долгов не осталось
 
 
 if __name__ == "__main__":

@@ -26,11 +26,12 @@ The bot's interface is in Russian: it is built for Russian speakers learning Eng
 
 ## Features
 
-- **10 scheduled cards a day**, by default 10:00–23:00 Moscow time. The translation is hidden under a spoiler; below the card are the buttons «Знаю» (I know), «Не знаю» (I don't know) and «📥 В архив» (To archive) — the last one sends the word straight to the archive, skipping the remaining steps.
-- **Each word is checked in both directions**: first RU→EN, then EN→RU.
-- **Saturday practice**: you type the learned words yourself. A typo counts as "almost"; a mistake sends the word back to be learned again.
+- **14 scheduled slots a day** (10:00–23:00 Moscow time by default), 6 of them reserved for new words, so a hard word can't take over the whole day. The translation is hidden under a spoiler; below the card are the buttons «Знаю» (I know), «Не знаю» (I don't know) and «📥 В архив» (To archive) — the last one sends the word straight to the archive, skipping the remaining steps.
+- **Both directions in one slot**: answer «Знаю» to the RU→EN card and the EN→RU one arrives right away.
+- **Spaced repetition**: «Знаю» schedules the word for the next day, then three days later. «Не знаю» does not put the word next in line but postpones it by 30 minutes, then 2 hours, then to tomorrow; one word is never shown more than three times a day.
+- **Practice every evening at 22:30**, in batches of 7: words that made it through the intervals have to be typed out. A typo counts as "almost"; a mistake sends the word back to be learned again.
 - **Missed cards are not lost.** While a card is unanswered no new ones arrive; once you answer, all the missed ones come at once.
-- **AI card generation** by level (A1–C1) and a topic in your own words: `/gen 5 B2 travel`. A generated card first comes to you for review — you can edit or delete it. If the queue is empty, the AI suggests a new word on its own.
+- **AI card generation** by level (A1–C1) and a topic in your own words: `/gen 5 B2 travel`. A generated card first comes to you for review — you can edit or delete it. The bot remembers every word it has ever offered, deleted ones included, so the same word never comes twice. If the queue is empty, the AI suggests a new word on its own.
 - **Manual adding** in a single message: `apple - яблоко` plus examples and synonyms. Either language can come first; duplicates are rejected. If you give no examples or synonyms, the AI writes them and shows the card for review — accept it, edit it, or keep the word without examples.
 - **Archive review**: the bot sends the list of learned words; reply with the numbers of the ones you've forgotten and they go back into learning.
 - **Weekly stats**, and access for friends via `/allow` (each person has their own words).
@@ -38,12 +39,12 @@ The bot's interface is in Russian: it is built for Russian speakers learning Eng
 ## A word's path
 
 1. **Adding.** You add a word yourself or the AI generates it. An AI card first goes to review: send it to the queue, edit it or delete it.
-2. **RU→EN.** The Russian word is shown, the English one is hidden. «Знаю» moves the word to the next step; «Не знаю» puts it back third in the queue.
-3. **EN→RU.** The same the other way round. After «Знаю» the word waits for practice.
-4. **Saturday practice.** You type the word in both directions:
+2. **First meeting.** Both sides arrive in one slot: RU→EN first, then EN→RU. «Не знаю» postpones the word by 30 minutes, then 2 hours, then to tomorrow.
+3. **Spaced reviews.** A day later, then three days later. Every «Знаю» moves the word forward; «Не знаю» sends it back to the start of the intervals.
+4. **Evening practice.** You type the word in both directions:
    - correct — the word goes to the archive;
-   - typo — the word goes second in the queue for one more EN→RU card and another practice;
-   - mistake — the word is learned again from step 2, third in the queue.
+   - typo — tomorrow brings one more EN→RU card and another practice;
+   - mistake — the word is learned again from step 2.
 5. **Archive.** With «🔁 Повтор архивных слов» (Review archived words) a forgotten word can be brought back and learned again from step 2.
 
 The «📥 В архив» button under a card skips steps 2–4: the word goes straight to the archive.
