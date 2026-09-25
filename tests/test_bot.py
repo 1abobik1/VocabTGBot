@@ -295,6 +295,22 @@ class BotTest(unittest.TestCase):
         self.msg(cards.NEXT_BUTTON)
         self.assertIn("Очередь пуста", self.tg.last_text())
 
+    def test_next_shows_a_card_even_before_it_is_due(self):
+        self.msg("apple - яблоко")
+        run(self.bot.broadcast_cards())
+        self.press("k:" + self.last_card_word())       # RU→EN
+        self.press("k:" + self.last_card_word())       # EN→RU, слово уходит на сутки
+        self.assertIn("вернусь к слову позже", [p for m, p in self.tg.calls if m == "answerCallbackQuery"][-1]["text"])
+
+        sent_before = len(self.tg.sent())
+        self.msg(cards.NEXT_BUTTON)
+        texts = [p["text"] for p in self.tg.sent()[sent_before:]]
+        self.assertTrue(any("Показываю раньше" in t for t in texts), texts)
+        self.assertTrue(any(t.startswith("Яблоко") or t.startswith("Apple") for t in texts), texts)
+        # срок слова при этом не съезжает
+        due = self.queue()[0]["due_at"]
+        self.assertEqual(due, (self.clock() + timedelta(days=1)).isoformat())
+
     def test_review_flow(self):
         for i, word in enumerate(["one - один", "two - два", "three - три"]):
             self.msg(word)

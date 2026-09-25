@@ -132,6 +132,11 @@ def prepare(word, now):
     return word
 
 
+def earliest(queue):
+    """Слово с самым ранним сроком — для кнопки «Карточка сейчас», когда ничего не созрело."""
+    return min(queue, key=due_at) if queue else None
+
+
 def stats(queue, now, today):
     return {
         "new": len(new_words(queue, now, today)),

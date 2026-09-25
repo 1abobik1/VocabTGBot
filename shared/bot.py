@@ -141,16 +141,27 @@ class Bot:
         settings["keyboard"] = cards.KEYBOARD_VERSION
         await self.repo.put(settings_key(username), settings)
 
-    async def send_card(self, username, chat_id, now=None):
-        """Карточку прямо сейчас: если есть неотвеченная, присылает её повторно."""
+    async def send_card(self, username, chat_id, now=None, force=False):
+        """Карточку прямо сейчас: если есть неотвеченная, присылает её повторно.
+
+        `force` (кнопка «Карточка сейчас») показывает ближайшее по сроку слово, даже если
+        срок ещё не подошёл.
+        """
         name = normalize_username(username)
-        queue = await self.repo.get(queue_key(name), [])
+        now = now or self._now()
+        queue = [srs.prepare(x, now) for x in await self.repo.get(queue_key(name), [])]
         pending = next((x for x in queue if x.get("sent_at")), None)
         if pending is not None:
-            await self._deliver(name, chat_id, [pending], queue, now or self._now())
+            await self._deliver(name, chat_id, [pending], queue, now)
             return pending
         sent = await self.send_cards(username, chat_id, 1, now=now)
-        return sent[0] if sent else None
+        if sent or not force:
+            return sent[0] if sent else None
+        word = srs.earliest(queue)
+        if word is None:
+            return None
+        await self._deliver(name, chat_id, [word], queue, now)
+        return word
 
     async def send_cards(self, username, chat_id, count, now=None):
         """До `count` карточек: сначала новые слова в рамках дневной квоты, затем созревшие повторы."""
@@ -196,6 +207,22 @@ class Bot:
         state.setdefault("new", 0)
         state.setdefault("missed", 0)
         return state
+
+    async def _next_card(self, username, chat_id):
+        """Кнопка «Карточка сейчас»: показывает слово, даже если его срок ещё не подошёл."""
+        now = self._now()
+        today = srs.local_date(self.schedule, now) if self.schedule else ""
+        queue = [srs.prepare(x, now) for x in await self.repo.get(queue_key(username), [])]
+        if not queue:
+            await self.send(chat_id, "Очередь пуста — добавь новое слово или нажми «🤖 AI-Генерация».")
+            return
+        ready = srs.pick_next(queue, now, today, 0, self._new_quota()) is not None
+        if not ready:
+            word = srs.earliest(queue)
+            due = w.parse_iso(srs.due_at(word))
+            when = self.schedule.local(due).strftime("%d.%m в %H:%M") if self.schedule else srs.due_at(word)
+            await self.send(chat_id, f"На сегодня всё отвечено: по расписанию это слово {when}. Показываю раньше:")
+        await self.send_card(username, chat_id, now=now, force=True)
 
     async def send_stats(self, username, chat_id):
         name = normalize_username(username)
@@ -424,8 +451,7 @@ class Bot:
         elif command == "/allow":
             await self._allow(text, user, users, chat_id)
         elif command == "/next" or text == cards.NEXT_BUTTON:
-            if not await self.send_card(username, chat_id):
-                await self.send(chat_id, "Очередь пуста — добавь новое слово.")
+            await self._next_card(username, chat_id)
         elif command == "/review" or text == cards.REVIEW_BUTTON:
             await self._start_review(username, chat_id)
         elif command == "/stats" or text == cards.STATS_BUTTON:
