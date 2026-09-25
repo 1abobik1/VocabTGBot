@@ -56,6 +56,33 @@ class GradingTest(unittest.TestCase):
         for answer, expected, english, verdict in cases:
             self.assertEqual(pr.grade(answer, expected, english), verdict, (answer, expected))
 
+    def test_transcription_is_ignored(self):
+        for answer in ("towel", "Towel!", "towel [ˈtaʊəl]"):
+            self.assertEqual(pr.grade(answer, "towel [ˈtaʊəl]", True), pr.OK, answer)
+        self.assertEqual(pr.grade("towl", "towel [ˈtaʊəl]", True), pr.NEAR)
+        self.assertEqual(pr.grade("mirror", "towel [ˈtaʊəl]", True), pr.WRONG)
+        # транскрипция не мешает и в обратную сторону, и в разборе ответа целой строкой
+        self.assertEqual(pr.split_answers("towel, mirror", ["towel [ˈtaʊəl]", "mirror [ˈmɪrər]"], True),
+                         ["towel", "mirror"])
+        self.assertEqual(pr.grade("утюг", "Утюг [ˈaɪərn]", False), pr.OK)
+
+    def test_any_of_several_translations_counts(self):
+        expected = "couch / sofa [kaʊtʃ / ˈsoʊfə]"
+        for answer in ("sofa", "couch", "couch sofa", "couch / sofa"):
+            self.assertEqual(pr.grade(answer, expected, True), pr.OK, answer)
+        self.assertEqual(pr.grade("chair", expected, True), pr.WRONG)
+        self.assertEqual(pr.grade("догнать", "догнать, наверстать", False), pr.OK)
+        self.assertEqual(pr.grade("замужем", "женат или замужем", False), pr.OK)
+
+    def test_other_variants_are_suggested_but_not_required(self):
+        expected = "couch / sofa [kaʊtʃ / ˈsoʊfə]"
+        self.assertEqual(pr.other_variants(expected, "sofa", True), ["couch"])
+        self.assertEqual(pr.other_variants(expected, "couch", True), ["sofa"])
+        self.assertEqual(pr.other_variants(expected, "couch sofa", True), [])  # написаны оба
+        self.assertEqual(pr.other_variants("towel [ˈtaʊəl]", "towel", True), [])  # вариант один
+        graded = pr.grade_round([{"en": expected, "ru": "диван"}], pr.RU_EN, "sofa")
+        self.assertEqual(graded[0][2:], (pr.OK, ["couch"]))
+
     def test_final_verdict(self):
         self.assertEqual(pr.final_verdict({pr.RU_EN: pr.OK, pr.EN_RU: pr.OK}), pr.OK)
         self.assertEqual(pr.final_verdict({pr.RU_EN: pr.NEAR, pr.EN_RU: pr.OK}), pr.NEAR)
@@ -150,6 +177,7 @@ class PracticeFlowTest(unittest.TestCase):
 
         self.msg("loud silense hit it off sound")  # опечатка в "silence"
         self.assertIn("2) 🟡 silense → <b>silence</b>", self.tg.sent()[-2]["text"])
+        self.assertIn("1) ✅ loud", self.tg.sent()[-2]["text"])
         self.assertIn("2/3.</b> Теперь по-русски", self.tg.last_text())
 
         self.msg("звонкий, тишина, поладить, тихий")  # 3 почти, 4 неверно
@@ -176,6 +204,17 @@ class PracticeFlowTest(unittest.TestCase):
         # пропущенный слот доезжает сразу после практики
         self.assertEqual(len(self.cards_sent()), 1)
         self.assertEqual(self.get("sched")["missed"], 0)
+
+    def test_word_with_transcription_and_variants_is_archived(self):
+        self.seed_practice([("towel [ˈtaʊəl]", "полотенце", None), ("couch / sofa [kaʊtʃ / ˈsoʊfə]", "диван", None)])
+        self.msg("/practice")
+        self.msg("towel, sofa")
+        feedback = self.tg.sent()[-2]["text"]
+        self.assertIn("1) ✅ towel [ˈtaʊəl]", feedback)
+        self.assertIn("можно и так: couch", feedback)
+        self.msg("полотенце, диван")
+        self.assertEqual([x["en"] for x in self.get("known")], ["towel [ˈtaʊəl]", "couch / sofa [kaʊtʃ / ˈsoʊfə]"])
+        self.assertEqual(self.get("queue"), [])  # обе карточки ушли в архив
 
     def test_practice_takes_words_in_batches(self):
         self.bot.schedule = Schedule(practice_batch=2)

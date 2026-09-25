@@ -785,9 +785,12 @@ class Bot:
             return
         graded = pr.grade_round(words, round_name, text)
         expected = pr.expected_answers(words, round_name)
-        for (word, _, verdict) in graded:
+        for (word, _, verdict, _extras) in graded:
             session["results"].setdefault(word["id"], {})[round_name] = verdict
-        feedback = [(word, answer, verdict, exp) for (word, answer, verdict), exp in zip(graded, expected)]
+        feedback = [
+            (word, answer, verdict, exp, extras)
+            for (word, answer, verdict, extras), exp in zip(graded, expected)
+        ]
         await self.send(chat_id, cards.render_practice_feedback(feedback))
         if round_name == pr.RU_EN:
             session["round"] = pr.EN_RU

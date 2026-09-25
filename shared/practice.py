@@ -21,28 +21,57 @@ DIRECTIONS = (RU_EN, EN_RU)
 
 _NUMBERING = re.compile(r"^\s*\d+\s*[).:\-–—]?\s+|^\s*\d+\s*[).:]\s*")
 _PARENS = re.compile(r"\([^)]*\)")
+# Транскрипция в карточке ("towel [ˈtaʊəl]") на проверку не влияет.
+_BRACKETS = re.compile(r"\[[^\]]*\]")
+# Несколько вариантов перевода: "couch / sofa", "догнать, наверстать", "женат или замужем".
+_VARIANT_SPLIT = re.compile(r"[,;/]|\bили\b")
 _NON_WORD = re.compile(r"[^\w\s]", re.UNICODE)
 _EN_PREFIX = re.compile(r"^(to|a|an|the)\s+")
 _SKIP_ANSWERS = {"", "-", "—", "?", "...", "…"}
 
 
+def strip_extras(text):
+    """Убирает транскрипцию и пояснения в скобках: "towel [ˈtaʊəl] (для рук)" -> "towel"."""
+    return " ".join(_PARENS.sub(" ", _BRACKETS.sub(" ", text or "")).split())
+
+
 def normalize(text):
-    text = (text or "").lower().replace("ё", "е").replace("’", "'").replace("'", "")
-    text = _NON_WORD.sub(" ", _PARENS.sub(" ", text))
-    return " ".join(text.split())
+    text = strip_extras(text).lower().replace("ё", "е").replace("’", "'").replace("'", "")
+    return " ".join(_NON_WORD.sub(" ", text).split())
+
+
+def readable_variants(expected):
+    """Варианты перевода в исходном виде, без транскрипции: "couch / sofa" -> ["couch", "sofa"]."""
+    parts = [p.strip() for p in _VARIANT_SPLIT.split(strip_extras(expected))]
+    return [p for p in parts if p]
 
 
 def variants(expected, english):
-    """Acceptable answers: the whole translation and each part of "догнать, наверстать" or "женат/замужем"."""
-    parts = [expected] + re.split(r"[,;/]| или ", _PARENS.sub(" ", expected))
+    """Что засчитывается: вся строка целиком и каждый вариант по отдельности."""
     result = []
-    for part in parts:
+    for part in [strip_extras(expected)] + readable_variants(expected):
         value = normalize(part)
         if english:
             value = _EN_PREFIX.sub("", value)
         if value and value not in result:
             result.append(value)
     return result
+
+
+def other_variants(expected, answer, english):
+    """Варианты, которые тоже подошли бы, кроме написанного: ответ "sofa" -> ["couch"]."""
+    options = readable_variants(expected)
+    if len(options) < 2:
+        return []
+    given = normalize(answer)
+    extra = []
+    for option in options:
+        value = normalize(option)
+        if english:
+            value = _EN_PREFIX.sub("", value)
+        if value and value not in given:  # вариант, который не написан в ответе
+            extra.append(option)
+    return extra
 
 
 def levenshtein(a, b):
@@ -130,11 +159,14 @@ def expected_answers(words, direction):
 
 
 def grade_round(words, direction, text):
-    """Returns [(word, answer, verdict)] in the order of `words`."""
+    """[(слово, ответ, вердикт, другие подходящие варианты)] в порядке `words`."""
     english = direction == RU_EN
     expected = expected_answers(words, direction)
     answers = split_answers(text, expected, english)
-    return [(word, answer, grade(answer, exp, english)) for word, answer, exp in zip(words, answers, expected)]
+    return [
+        (word, answer, grade(answer, exp, english), other_variants(exp, answer, english) if grade(answer, exp, english) == OK else [])
+        for word, answer, exp in zip(words, answers, expected)
+    ]
 
 
 def final_verdict(results):

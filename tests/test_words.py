@@ -47,6 +47,13 @@ class ParseTest(unittest.TestCase):
         with self.assertRaises(w.ParseError):
             w.parse_add_message("apple—яблоко")  # needs spaces around the dash
 
+    def test_notes_in_brackets_do_not_decide_the_language(self):
+        en, ru, _ = w.parse_add_message("Плита - stove (амер.) / cooker (брит.) [stoʊv / ˈkʊkər]")
+        self.assertEqual(en, "stove (амер.) / cooker (брит.) [stoʊv / ˈkʊkər]")
+        self.assertEqual(ru, "Плита")
+        en, ru, _ = w.parse_add_message("towel [ˈtaʊəl] - полотенце")
+        self.assertEqual((en, ru), ("towel [ˈtaʊəl]", "полотенце"))
+
     def test_dash_inside_russian_sentence(self):
         _, _, examples = w.parse_add_message(
             "capital — столица\nМосква — столица России. — Moscow is the capital of Russia."
@@ -74,6 +81,11 @@ class ParseTest(unittest.TestCase):
         self.assertIsNone(w.find_duplicate("look out", "искать", queue, known))
         # archived words count too
         self.assertIs(w.find_duplicate("lookup", "искать", [], [existing]), existing)
+
+    def test_transcription_does_not_hide_duplicates(self):
+        existing = w.new_word("towel [ˈtaʊəl]", "полотенце")
+        self.assertIs(w.find_duplicate("towel", "полотенце", [existing], []), existing)
+        self.assertEqual(w.compact("couch / sofa [kaʊtʃ / ˈsoʊfə]"), w.compact("couch/sofa"))
 
     def test_numbers(self):
         self.assertEqual(w.parse_numbers("2 5 7"), [2, 5, 7])

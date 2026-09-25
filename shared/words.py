@@ -28,6 +28,11 @@ class ParseError(ValueError):
 
 
 _CYRILLIC = re.compile("[а-яё]", re.IGNORECASE)
+_EXTRAS = re.compile(r"\[[^\]]*\]|\([^)]*\)")
+
+
+def _is_russian(text):
+    return bool(_CYRILLIC.search(_EXTRAS.sub(" ", text)))
 
 
 def _split_pair(line):
@@ -46,7 +51,8 @@ def _split_pair(line):
     if not candidates:
         return None
     for left, right in candidates:
-        left_ru, right_ru = bool(_CYRILLIC.search(left)), bool(_CYRILLIC.search(right))
+        # Пометки и транскрипция ("stove (амер.) [stoʊv]") на определение языка не влияют.
+        left_ru, right_ru = _is_russian(left), _is_russian(right)
         if left_ru != right_ru:
             return (right, left) if left_ru else (left, right)
     return candidates[0]
@@ -127,8 +133,9 @@ def new_word(en, ru, examples=None, synonyms=None, due_at=None):
 
 
 def compact(text):
-    """Drop all whitespace and ignore case: "Look  up" == "lookup"."""
-    return "".join(text.split()).casefold()
+    """Без пробелов, регистра, транскрипции и пояснений: "Look  up" == "lookup",
+    "towel [ˈtaʊəl]" == "towel"."""
+    return "".join(_EXTRAS.sub(" ", text or "").split()).casefold()
 
 
 def find_duplicate(en, ru, queue, known):

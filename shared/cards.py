@@ -256,12 +256,15 @@ def practice_skip_keyboard():
 
 
 def render_practice_feedback(graded):
-    """graded: [(word, answer, verdict, expected)]"""
+    """graded: [(слово, ответ, вердикт, ожидаемое, другие подходящие варианты)]"""
     lines = []
-    for i, (_, answer, verdict, expected) in enumerate(graded, start=1):
+    for i, (_, answer, verdict, expected, extras) in enumerate(graded, start=1):
         icon = _VERDICT_ICONS[verdict]
         if verdict == "ok":
-            lines.append(f"{i}) {icon} {escape(expected)}")
+            line = f"{i}) {icon} {escape(expected)}"
+            if extras:
+                line += f"\n    можно и так: {escape(', '.join(extras))}"
+            lines.append(line)
         else:
             given = escape(answer) if answer else "—"
             lines.append(f"{i}) {icon} {given} → <b>{escape(expected)}</b>")
