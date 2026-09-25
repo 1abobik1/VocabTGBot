@@ -84,9 +84,14 @@ class SentenceReview:
 @dataclass
 class CompositionReview:
     sentences: list[SentenceReview]
-    # Частая фраза со словом, чтобы запомнить, — только в первом разборе.
-    example_en: str = ""
-    example_ru: str = ""
+
+
+@dataclass
+class WordUsage:
+    """Итог после «Готово»: как ещё употребляют слово, с примерами."""
+
+    tip_ru: str
+    examples: list[Pair]
 
 
 # ---- образец ответа из dataclass ---------------------------------------------------

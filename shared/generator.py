@@ -118,7 +118,7 @@ def _clean_pair(pair, main=False):
     return {"en": en, "ru": ru}
 
 
-def _clean_pairs(pairs, limit=2):
+def clean_pairs(pairs, limit=2):
     return [p for p in map(_clean_pair, pairs) if p][:limit]
 
 
@@ -136,12 +136,12 @@ def parse_cards(output, existing=(), limit=MAX_CARDS):
         if w.compact(en) in seen:
             print(f"generator: dropped duplicate {en!r}")
             continue
-        examples = _clean_pairs(raw.examples)
+        examples = clean_pairs(raw.examples)
         if not examples:
             print(f"generator: dropped card without valid examples {raw}"[:240])
             continue  # карточка без примера не стоит того, чтобы её учить
         seen.add(w.compact(en))
-        cards.append(w.new_word(en, pair["ru"], examples, _clean_pairs(raw.synonyms)))
+        cards.append(w.new_word(en, pair["ru"], examples, clean_pairs(raw.synonyms)))
         if len(cards) >= limit:
             break
     return cards
@@ -152,7 +152,7 @@ def parse_enrichment(output):
     enrichment = ai.parse(ai.Enrichment, output)
     if enrichment is None:
         return [], []
-    return _clean_pairs(enrichment.examples), _clean_pairs(enrichment.synonyms)
+    return clean_pairs(enrichment.examples), clean_pairs(enrichment.synonyms)
 
 
 async def generate(ai_client, level, count, topic=None, existing=(), model=DEFAULT_MODEL, grammar=()):

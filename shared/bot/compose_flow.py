@@ -53,10 +53,10 @@ class ComposeFlow:
         await self.send(ctx.chat_id, "Хорошо. На карточку можно ответить кнопками.")
 
     async def _compose_text(self, ctx, state, word, text, transcript=None):
-        """Очередное сообщение с предложениями: разбор сразу, итог — на MAX_SENTENCES или по «Готово»."""
+        """Очередное сообщение с предложениями: разбор сразу, итог — по «Готово»."""
         items = state.get("items", [])
         found = compose.split_sentences(text)
-        sentences = found[: compose.MAX_SENTENCES - len(items)]
+        sentences = found[: compose.MAX_PER_MESSAGE]
         problem = compose.check_input(sentences)
         if problem:
             heard = f"🎙 Услышал: <i>{cards.escape(transcript)}</i>\n\n" if transcript else ""
@@ -66,7 +66,7 @@ class ComposeFlow:
         try:
             result = await compose.review(
                 self.ai, word, sentences, await self._global_level(ctx.username), spoken=transcript is not None,
-                with_example=not state.get("example_shown"), model=self.ai_model,
+                model=self.ai_model,
             )
         except Exception as error:  # модель или сеть
             print(f"compose review failed: {error!r}")
@@ -75,13 +75,9 @@ class ComposeFlow:
             await self.send(ctx.chat_id, "😕 Не получилось проверить. Пришли предложение ещё раз чуть позже.",
                             cards.compose_keyboard(done=bool(items)))
             return
-        fresh, example = result
-        text = cards.render_compose_review(fresh, len(items) + 1, example, transcript, len(found) - len(sentences))
-        items = items + fresh
-        state = dict(state, items=items, example_shown=state.get("example_shown") or example is not None)
-        if len(items) >= compose.MAX_SENTENCES:
-            await self._compose_finish(ctx, state, word, text + "\n\n" + cards.render_compose_result(items))
-            return
+        text = cards.render_compose_review(result, len(items) + 1, transcript, len(found) - len(sentences))
+        items = items + result
+        state = dict(state, items=items)
         # Кнопки прошлого разбора больше не нужны: «Готово» и «Отмена» — под последним.
         sent, _ = await asyncio.gather(
             self.send(ctx.chat_id, text + "\n\n" + cards.render_compose_progress(items),
@@ -104,11 +100,20 @@ class ComposeFlow:
         elif not state.get("items"):
             await self.send(ctx.chat_id, "Сначала пришли хотя бы одно предложение.", cards.compose_keyboard())
         else:
-            await self._compose_finish(ctx, state, word, cards.render_compose_result(state["items"]))
+            await self._compose_finish(ctx, state, word)
 
-    async def _compose_finish(self, ctx, state, word, text):
-        """Итог и ответ на карточку: «Знаю», если слово верно хотя бы в MIN_GOOD предложениях."""
-        await self.send(ctx.chat_id, text)
+    async def _compose_finish(self, ctx, state, word):
+        """Итог и ответ на карточку: «Знаю», если слово верно хотя бы в MIN_GOOD предложениях.
+        Совет, как ещё употребляют слово, — если ИИ ответил; без него итог всё равно засчитывается."""
+        await self.tg.call("sendChatAction", {"chat_id": ctx.chat_id, "action": "typing"})
+        sentences = [x["corrected"] for x in state["items"]]
+        try:
+            usage = await compose.usage(self.ai, word, sentences, await self._global_level(ctx.username),
+                                        model=self.ai_model)
+        except Exception as error:
+            print(f"compose usage failed: {error!r}")
+            usage = None
+        await self.send(ctx.chat_id, cards.render_compose_result(word, state["items"], usage))
         ok = compose.passed(state["items"])
         answer = await self._apply_card_answer(ctx.username, "k" if ok else "n", word["id"], state["stage"])
         steps = [self.repo.put(compose_key(ctx.username), {}), *answer["writes"],

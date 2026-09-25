@@ -15,11 +15,16 @@ KEY = OWNER.lower()
 WORD = {"en": "chill", "ru": "отдыхать"}
 
 
-def review(*verdicts, example=("Let's just chill tonight.", "Давай просто отдохнём сегодня.")):
-    sentences = [{"sentence": f"s{i}", "verdict": v, "corrected": f"Fixed sentence {i}.",
-                  "comment_ru": "Пропущен артикль." if v != "correct" else ""} for i, v in enumerate(verdicts)]
-    en, ru = example or ("", "")
-    return {"response": {"sentences": sentences, "example_en": en, "example_ru": ru}}
+def review(*verdicts):
+    return {"response": {"sentences": [
+        {"sentence": f"s{i}", "verdict": v, "corrected": f"Fixed sentence {i}.",
+         "comment_ru": "Пропущен артикль." if v != "correct" else ""} for i, v in enumerate(verdicts)]}}
+
+
+USAGE = {"response": {
+    "tip_ru": "Ещё говорят «chill out» — расслабиться, и «chill» — спокойный.",
+    "examples": [{"en": "Just chill out, it's fine.", "ru": "Расслабься, всё нормально."},
+                 {"en": "He's a really chill guy.", "ru": "Он очень спокойный парень."}]}}
 
 
 class ComposeLogicTest(unittest.TestCase):
@@ -35,32 +40,37 @@ class ComposeLogicTest(unittest.TestCase):
 
     def test_request(self):
         prompt = compose.build_request({"en": "chill [tʃɪl]", "ru": "отдыхать"}, ["I chill.", "We chill."], "B1",
-                                       spoken=True, with_example=True)
+                                       spoken=True)
         system, user = prompt["messages"][0]["content"], prompt["messages"][1]["content"]
         self.assertIn("the word or phrase 'chill' (Russian: 'отдыхать')", system)
         self.assertIn("CEFR level B1", system)
         self.assertIn("transcribed from the learner's speech", system)
-        self.assertIn("'example_en': one short, common sentence", system)
         self.assertEqual(user, "1. I chill.\n2. We chill.")
-        plain = compose.build_request(WORD, ["a b"], "B1")["messages"][0]["content"]
-        self.assertNotIn("speech", plain)
-        self.assertIn("Leave 'example_en' and 'example_ru' empty.", plain)
+        self.assertNotIn("speech", compose.build_request(WORD, ["a b"], "B1")["messages"][0]["content"])
 
     def test_parse_and_verdict(self):
-        items, example = compose.parse(review("correct", "grammar", "wrong"), ["a b", "c d", "e f"])
+        items = compose.parse(review("correct", "grammar", "wrong"), ["a b", "c d", "e f"])
         self.assertEqual([x["sentence"] for x in items], ["a b", "c d", "e f"])  # предложения — свои, не из ответа
         self.assertEqual(items[0]["comment"], "")
-        self.assertEqual(example, {"en": "Let's just chill tonight.", "ru": "Давай просто отдохнём сегодня."})
         self.assertEqual(compose.good_count(items), 2)
         self.assertTrue(compose.passed(items))
-        self.assertFalse(compose.passed(compose.parse(review("correct", "wrong"), ["a b", "c d"])[0]))
+        self.assertFalse(compose.passed(compose.parse(review("correct", "wrong"), ["a b", "c d"])))
         self.assertIsNone(compose.parse(review("correct"), ["a b", "c d"]))           # разобрано не всё
         self.assertIsNone(compose.parse(review("correct", "maybe"), ["a b", "c d"]))  # непонятный вердикт
-        bad = review("correct", example=("Давай отдохнём.", "Давай отдохнём."))
+        bad = review("correct")
         bad["response"]["sentences"][0]["corrected"] = "Я отдыхаю."
-        items, example = compose.parse(bad, ["a b"])
-        self.assertEqual((items[0]["corrected"], example), ("a b", None))
-        self.assertIsNone(compose.parse(review("correct", example=None), ["a b"])[1])
+        self.assertEqual(compose.parse(bad, ["a b"])[0]["corrected"], "a b")
+
+    def test_usage(self):
+        prompt = compose.build_usage_request(WORD, ["I chill at home."], "B1")
+        self.assertIn("typical constructions and collocations", prompt["messages"][0]["content"])
+        self.assertIn("exactly 2 short, natural sentences", prompt["messages"][0]["content"])
+        self.assertEqual(prompt["messages"][1]["content"], "The learner's sentences:\n- I chill at home.")
+        tip, examples = compose.parse_usage(USAGE)
+        self.assertIn("chill out", tip)
+        self.assertEqual([e["en"] for e in examples], ["Just chill out, it's fine.", "He's a really chill guy."])
+        broken = {"response": {"tip_ru": "Use chill out.", "examples": [{"en": "Chill.", "ru": "Chill."}]}}
+        self.assertIsNone(compose.parse_usage(broken))                                # ничего годного
 
     def test_punctuation_only_fix_is_not_shown(self):
         item = {"sentence": "my car is reliable it never breaks", "corrected": "My car is reliable; it never breaks.",
@@ -130,42 +140,47 @@ class ComposeFlowTest(unittest.TestCase):
         prompt_message = len(self.tg.calls)
         self.ai.responses.append(review("grammar"))
         self.msg("She chilling with friends.")
-        self.assertIn("'example_en': one short", self.ai.calls[-1][1]["messages"][0]["content"])
         text = self.tg.last_text()
         self.assertIn("1. 🟡 She chilling with friends.\n→ <b>Fixed sentence 0.</b>\n<i>Пропущен артикль.</i>", text)
-        self.assertIn("📌 Так часто говорят: <b>Let's just chill tonight.</b>\nДавай просто отдохнём сегодня.", text)
-        self.assertIn("Верно: 1 из 1. Нужно верных: 2. Пришли ещё предложение текстом или голосом (осталось 3).", text)
+        self.assertIn("Верно: 1 из 1. Нужно верных: 2. Пришли ещё предложение текстом или голосом.", text)
         self.assertEqual(self.buttons(), ["sd", "sc"])
         self.assertIn("sent_at", self.word())                                        # карточка ещё ждёт ответа
         dropped = [p["message_id"] for m, p in self.tg.calls if m == "editMessageReplyMarkup"]
         self.assertIn(prompt_message, dropped)                                      # «Отмена» у задания убрана
 
-        review_message = len(self.tg.calls) - 1
-        self.ai.responses += [{"text": "We chill on Fridays."}, review("correct", example=None)]
-        self.msg(voice={"file_id": "F1", "duration": 4})
-        self.assertIn("Leave 'example_en' and 'example_ru' empty.", self.ai.calls[-1][1]["messages"][0]["content"])
+        for n in range(5):  # голосовых сколько угодно, лимита нет
+            self.ai.responses += [{"text": f"We chill on day {n}."}, review("correct")]
+            self.msg(voice={"file_id": f"F{n}", "duration": 4})
         text = self.tg.last_text()
-        self.assertIn("🎙 Услышал: <i>We chill on Fridays.</i>\n\n2. ✅ We chill on Fridays.", text)
-        self.assertNotIn("📌", text)                                                # частая фраза — один раз
-        self.assertIn("Верно: 2 из 2. Уже засчитывается", text)
+        self.assertIn("🎙 Услышал: <i>We chill on day 4.</i>\n\n6. ✅ We chill on day 4.", text)
+        self.assertIn("Верно: 6 из 6. Уже засчитывается", text)
         self.assertEqual(self.word()["stage"], 0)                                  # пока не нажал «Готово»
 
-        self.press("sd", message_id=review_message + 2)
-        self.assertIn("🏁 Верно 2 из 2 — засчитано как «Знаю».", self.tg.sent()[-2]["text"])
+        self.ai.responses.append(USAGE)
+        self.press("sd")
+        usage_prompt = self.ai.calls[-1][1]["messages"]
+        self.assertIn("typical constructions", usage_prompt[0]["content"])
+        self.assertIn("- Fixed sentence 0.", usage_prompt[1]["content"])            # исправленные предложения
+        result = self.tg.sent()[-2]["text"]
+        self.assertIn("🏁 <b>Итог</b> · chill\n\nВерно 6 из 6 — засчитано как «Знаю».", result)
+        self.assertIn("💡 Ещё говорят «chill out»", result)
+        self.assertIn("<b>Ещё так говорят:</b>\n• Just chill out, it's fine.\n  <i>Расслабься, всё нормально.</i>", result)
         self.assertEqual(self.word()["stage"], 1)                                  # как «Знаю» на новом слове
         self.assertTrue(self.tg.last_text().startswith("Chill"))
         self.assertEqual(self.store.json(f"compose:{KEY}"), {})
         dropped = [p["message_id"] for m, p in self.tg.calls if m == "editMessageReplyMarkup"]
         self.assertIn(self.card_message, dropped)                                   # второй раз не ответить
 
-    def test_fourth_sentence_finishes_and_extra_ones_are_skipped(self):
+    def test_long_message_is_cut_and_weak_result_is_unknown(self):
         self.start()
-        self.ai.responses.append(review("correct", "wrong", "wrong", "wrong"))
-        self.msg("I chill. You chill. The soup is chill. It's chill outside. We chill a lot.")
-        self.assertEqual(self.ai.calls[-1][1]["messages"][1]["content"].count("\n"), 3)  # только 4 предложения
-        text = self.tg.sent()[-1]["text"]
-        self.assertIn("Лишние предложения (1) не учёл: максимум 4.", text)
-        self.assertIn("🏁 Верно 1 из 4 — меньше 2, считаю как «Не знаю»", text)
+        self.ai.responses.append(review("correct", "wrong", "wrong", "wrong", "wrong"))
+        self.msg("I chill. You chill. The soup is chill. It's chill outside. We chill a lot. They chill too.")
+        self.assertEqual(self.ai.calls[-1][1]["messages"][1]["content"].count("\n"), 4)  # 5 из 6
+        self.assertIn("Ещё 1 не разобрал: в одном сообщении — до 5.", self.tg.last_text())
+        self.ai.responses.append(RuntimeError("down"))                              # совет не пришёл — итог всё равно
+        self.press("sd")
+        self.assertIn("Верно 1 из 5 — меньше 2, считаю как «Не знаю»", self.tg.last_text())
+        self.assertNotIn("💡", self.tg.last_text())
         word = self.word()
         self.assertEqual((word["stage"], word["lapses_in_a_row"]), (0, 1))
         self.assertNotIn("sent_at", word)
