@@ -3,7 +3,7 @@
 import asyncio
 from datetime import timedelta
 
-from .. import cards, srs
+from .. import cards, compose, srs
 from .. import curriculum as cur
 from .. import exercises as ex
 from .. import practice as pr
@@ -205,7 +205,25 @@ class CardsFlow:
         if ctx.message_id is not None:
             steps.append(self._drop_buttons(ctx.chat_id, ctx.message_id))  # старую карточку нельзя ответить дважды
         await asyncio.gather(*steps, *answer["writes"])
+        if action == "k" and answer["result"] in (w.REVIEWED, w.TO_PRACTICE) and self.ai is not None:
+            # Совет по слову ждёт ИИ несколько секунд — в фоне, чтобы кнопка ответила сразу; следующие
+            # карточки приходят после совета, чтобы он был про слово, на которое только что ответил.
+            await self._background(self._advise_then_continue(ctx.username, ctx.chat_id, answer))
+            return
         await self._after_card_answer(ctx.username, ctx.chat_id, answer)
+
+    async def _advise_then_continue(self, username, chat_id, answer):
+        """«Знаю» на полностью отвеченной карточке: совет, как ещё употребляют слово, затем досылка.
+        Сразу после первой стороны нового слова совета нет — он выдал бы перевод до второй стороны."""
+        word = answer["word"]
+        try:
+            usage = await compose.usage(self.ai, word, [], await self._global_level(username), model=self.ai_model)
+        except Exception as error:
+            print(f"word advice failed: {error!r}")
+            usage = None
+        if usage:
+            await self.send(chat_id, cards.render_word_advice(word, usage))
+        await self._after_card_answer(username, chat_id, answer)
 
     async def _apply_card_answer(self, username, action, word_id, stage):
         """Ответ на карточку в памяти: «k» — знаю, «n» — не знаю, «a» — в архив.

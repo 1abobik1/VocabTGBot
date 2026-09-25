@@ -56,7 +56,8 @@ HELP_TEXT = (
     f"{COMPOSE_BUTTON} под карточкой — вместо «{KNOWN_BUTTON}»: свои предложения со словом, текстом или "
     "голосовыми, по одному и сколько хочешь. ИИ сразу разбирает каждое и показывает, как сказать "
     f"естественнее; по «{COMPOSE_DONE_BUTTON}» — советы и частые конструкции со словом. Слово "
-    f"употреблено верно хотя бы раз — засчитается как «{KNOWN_BUTTON}».\n\n"
+    f"употреблено верно хотя бы раз — засчитается как «{KNOWN_BUTTON}». Такой же совет приходит и после "
+    f"обычного «{KNOWN_BUTTON}», когда слово отвечено с обеих сторон.\n\n"
     f"{NEXT_BUTTON} — следующая карточка из очереди прямо сейчас, не дожидаясь расписания. "
     "Если на прошлую карточку ещё нет ответа, пришлёт её повторно.\n\n"
     f"{REVIEW_BUTTON} — список выученных слов, новые сверху. Пришли номера забытых "
@@ -294,13 +295,24 @@ def render_compose_result(word, items, usage=None):
     else:
         lines.append(f"Верно {good} из {total} — считаю как «{UNKNOWN_BUTTON}»: слово вернётся позже.")
     if usage:
-        tip, examples = usage
-        if tip:
-            lines += ["", f"💡 {_highlight_english(tip)}"]
-        if examples:
-            lines += ["", "<b>Ещё так говорят:</b>"]
-            lines += [f"• {_TENSE_NAMES[e['tense']]}: {escape(e['en'])}\n  <i>{escape(e['ru'])}</i>" for e in examples]
+        lines += _usage_lines(usage)
     return "\n".join(lines)
+
+
+def _usage_lines(usage):
+    tip, examples = usage
+    lines = []
+    if tip:
+        lines += ["", f"💡 {_highlight_english(tip)}"]
+    if examples:
+        lines += ["", "<b>Ещё так говорят:</b>"]
+        lines += [f"• {_TENSE_NAMES[e['tense']]}: {escape(e['en'])}\n  <i>{escape(e['ru'])}</i>" for e in examples]
+    return lines
+
+
+def render_word_advice(word, usage):
+    """Совет после «Знаю» на карточке — как после своих предложений."""
+    return "\n".join([f"📘 <b>{escape(word['en'])}</b> — {escape(word['ru'])}"] + _usage_lines(usage))
 
 
 def main_keyboard():

@@ -254,6 +254,33 @@ class ComposeFlowTest(unittest.TestCase):
         self.assertIn("cat", [x["en"] for x in self.store.json(f"queue:{KEY}")])
         self.assertEqual(self.ai.calls, [])
 
+    def test_know_on_a_finished_card_brings_advice(self):
+        word = self.word()
+        self.press(f"k:{word['id']}:0")                       # первая сторона нового слова — только разворот
+        self.assertEqual(self.ai.calls, [])
+        self.assertTrue(self.tg.last_text().startswith("Chill"))
+        deferred = []
+        self.bot.defer = deferred.append
+        self.ai.responses.append(USAGE)
+        self.press(f"k:{word['id']}:1")                       # вторая сторона — слово отвечено полностью
+        self.assertEqual(len(deferred), 1)                    # совет ждёт ИИ в фоне, кнопка отвечает сразу
+        asyncio.run(deferred[0])
+        prompt = self.ai.calls[-1][1]["messages"]
+        self.assertIn("recalled on a flashcard the word or phrase 'chill'", prompt[0]["content"])
+        self.assertEqual(prompt[1]["content"], "Word: chill\nRussian translation: отдыхать")
+        text = self.tg.last_text()
+        self.assertTrue(text.startswith("📘 <b>chill</b> — отдыхать\n\n💡 Ещё говорят <b>chill out</b>"))
+        self.assertIn("<b>Ещё так говорят:</b>\n• прошлое: We chilled out after the exam.", text)
+
+    def test_no_advice_when_ai_fails(self):
+        word = self.word()
+        self.press(f"k:{word['id']}:0")
+        before = len(self.tg.sent())
+        self.ai.responses += [RuntimeError("down")]
+        self.press(f"k:{word['id']}:1")
+        self.assertEqual(len(self.tg.sent()), before)          # без совета, без ошибок пользователю
+        self.assertEqual(self.word()["box"], 1)
+
     def test_stale_compose_button(self):
         word = self.word()
         self.press(f"k:{word['id']}:0")

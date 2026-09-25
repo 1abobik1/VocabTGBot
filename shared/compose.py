@@ -120,10 +120,12 @@ async def review(ai_client, word, sentences, level, spoken=False, model=ai.DEFAU
 
 
 def build_usage_request(word, sentences, level, model=ai.DEFAULT_MODEL):
+    """Совет по слову: после своих предложений (`sentences`) или после «Знаю» на карточке (пусто)."""
     en, ru = strip_extras(word["en"]), strip_extras(word["ru"])
+    context = ("made their own sentences with" if sentences else "recalled on a flashcard")
     system = (
         f"You are a kind English teacher for a native Russian speaker at CEFR level {level}. The learner has just "
-        f"made their own sentences with the word or phrase '{en}' (Russian: '{ru}'). Show what else is worth "
+        f"{context} the word or phrase '{en}' (Russian: '{ru}'). Show what else is worth "
         "knowing about it. 'tip_ru': 1-2 short sentences in natural Russian, addressing the learner as «ты»: other "
         "common meanings or uses of the word and the typical constructions and collocations with it that the "
         "learner did not use (write English words and phrases as they are, without quotes). 'past', 'present', "
@@ -133,7 +135,10 @@ def build_usage_request(word, sentences, level, model=ai.DEFAULT_MODEL):
         "with this word, choose a natural context for it rather than forcing it. 'en' is the sentence, "
         "'ru' its natural Russian translation."
     )
-    user = "The learner's sentences:\n" + "\n".join(f"- {s}" for s in sentences)
+    if sentences:
+        user = "The learner's sentences:\n" + "\n".join(f"- {s}" for s in sentences)
+    else:
+        user = f"Word: {en}\nRussian translation: {ru}"
     return ai.request(system, user, ai.WordUsage, 500, 0.6, model)
 
 
