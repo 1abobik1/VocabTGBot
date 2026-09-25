@@ -53,6 +53,15 @@ def sched_key(username):
     return f"sched:{username}"
 
 
+def practice_log_key(username):
+    """Итоги практики по словам: [{"at", "en", "ru_en", "en_ru"}] — для недельной статистики."""
+    return f"plog:{username}"
+
+
+# Сколько записей практики хранить (больше нужного на неделю — с запасом).
+PRACTICE_LOG_LIMIT = 400
+
+
 def seen_key(username):
     """Все английские слова, которые когда-либо попадали пользователю, чтобы ИИ их не повторял."""
     return f"seen:{username}"
@@ -224,11 +233,13 @@ class Bot:
         queue = [srs.prepare(x, now) for x in await self.repo.get(queue_key(name), [])]
         waiting = await self.repo.get(practice_key(name), [])
         day = await self._day_state(name, today)
+        practice = pr.weekly_practice_stats(await self.repo.get(practice_log_key(name), []), now)
         await self.send(
             chat_id,
             cards.render_stats(
                 w.weekly_stats(known), srs.stats(queue, now, today), len(waiting), day["new"], self._new_quota()
-            ),
+            )
+            + cards.render_practice_stats(practice),
         )
 
     async def _is_blocked(self, username, queue):
@@ -363,7 +374,7 @@ class Bot:
                 await self._finish_practice(username, chat_id, session)
             return
         prefix, _, value = data.partition(":")
-        if prefix in ("ia", "ib", "ie", "ix", "lv", "gen"):
+        if prefix in ("ia", "ib", "ie", "ix", "lv", "glv", "gen"):
             await self.tg.call("answerCallbackQuery", {"callback_query_id": query["id"]})
             if prefix in ("ia", "ib", "ix") and message_id is not None:
                 await self._drop_buttons(chat_id, message_id)
@@ -374,6 +385,8 @@ class Bot:
             elif prefix == "ie":
                 await self._inbox_edit_start(username, chat_id, value)
             elif prefix == "lv":
+                await self._set_level(username, chat_id, value, menu_message_id=message_id, scope="gen")
+            elif prefix == "glv":
                 await self._set_level(username, chat_id, value, menu_message_id=message_id)
             elif value.isdigit():
                 await self.generate_to_inbox(username, chat_id, int(value))
@@ -450,12 +463,18 @@ class Bot:
             await self.send_stats(username, chat_id)
         elif command == "/gen" or text == cards.GENERATE_BUTTON:
             await self._gen_command(username, chat_id, text if command else "")
-        elif command == "/level":
+        elif command == "/level" or text == cards.LEVEL_BUTTON:
             parts = text.split()
-            if len(parts) > 1:
+            if command and len(parts) > 1:
                 await self._set_level(username, chat_id, parts[1])
             else:
-                await self._gen_command(username, chat_id, "")
+                level = await self._global_level(username)
+                await self.send(chat_id, cards.render_level_menu(level), cards.level_keyboard(level))
+        elif text == cards.SETTINGS_BUTTON:
+            await self.send(chat_id, f"{cards.SETTINGS_BUTTON}: редкие действия. «{cards.BACK_BUTTON}» — в главное меню.",
+                            cards.settings_keyboard())
+        elif text == cards.BACK_BUTTON:
+            await self.send(chat_id, "Главное меню.", cards.main_keyboard())
         elif command == "/practice" or text == cards.PRACTICE_BUTTON:
             if not await self.start_practice(username, chat_id):
                 await self.send(chat_id, "Для практики пока нет слов: они появятся после «Знаю» в обе стороны.")
@@ -523,7 +542,8 @@ class Bot:
         """Ask the AI for examples and synonyms and put the card in the inbox for review."""
         await self.send(chat_id, f"⏳ Придумываю примеры для <b>{escape(en)}</b>…")
         try:
-            examples, synonyms = await generator.enrich(self.ai, en, ru, model=self.ai_model)
+            level = await self._global_level(username)
+            examples, synonyms = await generator.enrich(self.ai, en, ru, model=self.ai_model, level=level)
         except Exception as error:
             print(f"enrichment failed: {error!r}")
             examples = []
@@ -600,39 +620,56 @@ class Bot:
         seen += [x for x in words if w.compact(x) not in known]
         await self.repo.put(seen_key(username), seen[-SEEN_LIMIT:])
 
-    async def _level(self, username):
+    async def _global_level(self, username):
+        """Общий уровень: по нему ИИ делает всё — слова, примеры, упражнения."""
         settings = await self.repo.get(settings_key(username), {})
         return settings.get("level") or generator.DEFAULT_LEVEL
 
-    async def _set_level(self, username, chat_id, value, menu_message_id=None):
-        """Save the level; from the generation menu the menu itself is updated in place."""
-        level = generator.normalize_level(value)
-        if level is None:
-            await self.send(chat_id, "Уровень: A1, A2, B1, B2 или C1. Например: /level B2")
-            return
+    async def _level(self, username):
+        """Уровень для генерации слов: свой, если выбран, иначе общий."""
         settings = await self.repo.get(settings_key(username), {})
-        settings["level"] = level
-        await self.repo.put(settings_key(username), settings)
-        if menu_message_id is not None:
-            await self.tg.call(
-                "editMessageText",
-                {
-                    "chat_id": chat_id,
-                    "message_id": menu_message_id,
-                    "text": cards.render_generate_menu(level),
-                    "parse_mode": "HTML",
-                    "reply_markup": cards.generate_keyboard(level),
-                },
-            )
+        return settings.get("gen_level") or settings.get("level") or generator.DEFAULT_LEVEL
+
+    async def _generation_menu(self, username):
+        settings = await self.repo.get(settings_key(username), {})
+        own = bool(settings.get("gen_level"))
+        level = await self._level(username)
+        return cards.render_generate_menu(level, own), cards.generate_keyboard(level, own)
+
+    async def _edit_menu(self, chat_id, message_id, text, keyboard):
+        await self.tg.call(
+            "editMessageText",
+            {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML", "reply_markup": keyboard},
+        )
+
+    async def _set_level(self, username, chat_id, value, menu_message_id=None, scope="global"):
+        """scope="global" — общий уровень; scope="gen" — только для генерации ("auto" — снова как общий)."""
+        settings = await self.repo.get(settings_key(username), {})
+        if scope == "gen" and value == "auto":
+            settings.pop("gen_level", None)
         else:
-            await self.send(chat_id, f"Уровень для генерации: <b>{level}</b>")
+            level = generator.normalize_level(value)
+            if level is None:
+                await self.send(chat_id, "Уровень: A1, A2, B1, B2 или C1. Например: /level B2")
+                return
+            settings["gen_level" if scope == "gen" else "level"] = level
+        await self.repo.put(settings_key(username), settings)
+        if scope == "gen":
+            text, keyboard = await self._generation_menu(username)
+        else:
+            level = await self._global_level(username)
+            text, keyboard = cards.render_level_menu(level), cards.level_keyboard(level)
+        if menu_message_id is not None:
+            await self._edit_menu(chat_id, menu_message_id, text, keyboard)
+        else:
+            await self.send(chat_id, text, keyboard)
 
     async def _gen_command(self, username, chat_id, text):
         """/gen [count] [level] [topic in free words]"""
         args = text.split()[1:]
         if not args:
-            level = await self._level(username)
-            await self.send(chat_id, cards.render_generate_menu(level), cards.generate_keyboard(level))
+            text, keyboard = await self._generation_menu(username)
+            await self.send(chat_id, text, keyboard)
             return
         count = 5
         if args and args[0].isdigit():
@@ -829,6 +866,14 @@ class Bot:
         queue = [srs.prepare(x, self._now()) for x in await self.repo.get(queue_key(username), [])]
         known = await self.repo.get(known_key(username), [])
         waiting = await self.repo.get(practice_key(username), [])
+        by_id = {x["id"]: x for x in words}
+        log = await self.repo.get(practice_log_key(username), [])
+        log += [
+            {"at": self._now().isoformat(), "en": by_id[word_id]["en"], **verdicts}
+            for word_id, verdicts in session["results"].items()
+            if word_id in by_id
+        ]
+        await self.repo.put(practice_log_key(username), log[-PRACTICE_LOG_LIMIT:])
         outcome = pr.apply_results(queue, known, waiting, session["results"], self.schedule, self._now())
         await self.repo.put(queue_key(username), queue)
         await self.repo.put(known_key(username), known)

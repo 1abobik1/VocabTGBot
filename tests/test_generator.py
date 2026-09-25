@@ -131,6 +131,15 @@ class ParseCardsTest(unittest.TestCase):
         ai = FakeAI({"response": "nope"}, {"response": "nope"})
         self.assertEqual(asyncio.run(generator.enrich(ai, "apple", "яблоко")), ([], []))
 
+    def test_gemma_runs_without_thinking(self):
+        ai = FakeAI({"response": {"cards": [card("chill", "отдыхать")]}}, {"response": {
+            "examples": [{"en": "Let's chill.", "ru": "Давай отдохнём."}], "synonyms": []}})
+        asyncio.run(generator.generate(ai, "B1", 1, model="@cf/google/gemma-4-26b-a4b-it"))
+        asyncio.run(generator.enrich(ai, "chill", "отдыхать", model="@cf/google/gemma-4-26b-a4b-it"))
+        for _, payload in ai.calls:
+            self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": False})
+        self.assertEqual(generator.model_options("@cf/meta/llama-4-scout-17b-16e-instruct"), {})
+
     def test_generate_retries_once(self):
         ai = FakeAI({"response": "nothing"}, {"response": {"cards": [card("chill", "отдыхать")]}})
         result = asyncio.run(generator.generate(ai, "B1", 1))
@@ -233,31 +242,61 @@ class InboxFlowTest(unittest.TestCase):
         self.assertEqual(self.key("state"), {})
         self.assertEqual(self.key("queue"), None)
 
-    def test_level_is_changed_inside_the_generation_menu(self):
+    def test_generation_follows_the_global_level_by_default(self):
         self.msg("/start")
-        self.msg(cards.GENERATE_BUTTON)
+        self.msg(cards.LEVEL_BUTTON)
         menu = self.tg.sent()[-1]
-        self.assertIn("Уровень: <b>B1</b>", menu["text"])
-        self.assertEqual(menu["reply_markup"], cards.generate_keyboard("B1"))
-        self.assertIn({"text": "• B1 •", "callback_data": "lv:B1"}, menu["reply_markup"]["inline_keyboard"][1])
-
-        self.press("lv:C1")
-        self.assertEqual(self.key("settings")["level"], "C1")
+        self.assertIn("Общий уровень английского: <b>B1</b>", menu["text"])
+        self.assertEqual(menu["reply_markup"], cards.level_keyboard("B1"))
+        self.press("glv:B2")
+        self.assertEqual(self.key("settings")["level"], "B2")
         method, payload = self.tg.calls[-1]
         self.assertEqual((method, payload["message_id"]), ("editMessageText", 50))
-        self.assertIn("Уровень: <b>C1</b>", payload["text"])
-        self.assertEqual(payload["reply_markup"], cards.generate_keyboard("C1"))
+        self.assertIn("<b>B2</b>", payload["text"])
 
+        self.msg(cards.GENERATE_BUTTON)
+        menu = self.tg.sent()[-1]
+        self.assertIn("Уровень: <b>B2</b> (как общий", menu["text"])
+        self.assertEqual(menu["reply_markup"], cards.generate_keyboard("B2"))
+        self.ai.responses.append({"response": {"cards": [card("chill", "отдыхать")]}})
+        self.press("gen:1")
+        self.assertIn("CEFR level B2", self.ai.calls[-1][1]["messages"][0]["content"])
+
+    def test_generation_can_have_its_own_level(self):
+        self.msg("/start")
+        self.press("glv:B1")
+        self.msg(cards.GENERATE_BUTTON)
+        self.press("lv:C1")  # только для генерации
+        settings = self.key("settings")
+        self.assertEqual((settings["level"], settings["gen_level"]), ("B1", "C1"))
+        payload = self.tg.calls[-1][1]
+        self.assertIn("Уровень: <b>C1</b> (свой для генерации)", payload["text"])
+        self.assertEqual(payload["reply_markup"], cards.generate_keyboard("C1", own=True))
         self.ai.responses.append({"response": {"cards": [card("chill", "отдыхать")]}})
         self.press("gen:1")
         self.assertIn("CEFR level C1", self.ai.calls[-1][1]["messages"][0]["content"])
+
+        # смена общего уровня не трогает свой уровень генерации...
+        self.press("glv:A2")
+        self.assertEqual(self.key("settings")["gen_level"], "C1")
+        # ...а «как общий» возвращает связь
+        self.press("lv:auto")
+        self.assertNotIn("gen_level", self.key("settings"))
+        self.assertIn("Уровень: <b>A2</b> (как общий", self.tg.calls[-1][1]["text"])
+
+    def test_manual_examples_follow_the_global_level(self):
+        self.msg("/start")
+        self.press("glv:A2")
+        self.ai.responses.append(self.enrichment())
+        self.msg("apple - яблоко")
+        self.assertIn("CEFR level A2", self.ai.calls[-1][1]["messages"][0]["content"])
 
     def test_level_command_still_works(self):
         self.msg("/start")
         self.msg("/level b2")
         self.assertEqual(self.key("settings")["level"], "B2")
         self.msg("/level")
-        self.assertEqual(self.tg.sent()[-1]["reply_markup"], cards.generate_keyboard("B2"))
+        self.assertEqual(self.tg.sent()[-1]["reply_markup"], cards.level_keyboard("B2"))
         self.msg("/level Z9")
         self.assertIn("A1, A2, B1, B2 или C1", self.tg.last_text())
 

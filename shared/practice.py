@@ -6,6 +6,7 @@ EN→RU. Ошибка — слово учится заново с RU→EN.
 """
 
 import re
+from datetime import timedelta
 
 from . import srs
 
@@ -201,3 +202,20 @@ def apply_results(queue, known, practice, results, schedule, now):
             queue.append(word)
         outcome[verdict].append(word)
     return outcome
+
+
+def weekly_practice_stats(log, now, days=7):
+    """Итоги практики за неделю: счётчики по направлениям и слова с ошибками, самые частые первыми."""
+    since = (now - timedelta(days=days)).isoformat()
+    recent = [x for x in log if x.get("at", "") >= since]
+    counts = {d: {OK: 0, NEAR: 0, WRONG: 0} for d in DIRECTIONS}
+    misses = {}
+    for entry in recent:
+        for direction in DIRECTIONS:
+            verdict = entry.get(direction)
+            if verdict in counts[direction]:
+                counts[direction][verdict] += 1
+                if verdict != OK:
+                    misses[entry["en"]] = misses.get(entry["en"], 0) + 1
+    worst = sorted(misses.items(), key=lambda item: (-item[1], item[0]))
+    return {"sessions_words": len(recent), "counts": counts, "worst": worst}

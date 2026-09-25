@@ -31,8 +31,9 @@ UTC_OFFSET_HOURS = "3"  # Moscow time, no DST
 PRACTICE_DAY = "daily"
 PRACTICE_TIME = "22:30"
 PRACTICE_BATCH = "7"
-# Workers AI model for generated cards (free tier: 10,000 neurons/day, ~13 per card).
-AI_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct"
+# Workers AI model for generated cards and examples (free tier: 10,000 neurons/day;
+# Gemma 4 costs ~3 neurons per card). Some newer models are paid-plan only.
+AI_MODEL = "@cf/google/gemma-4-26b-a4b-it"
 
 # Workers AI binding used by /gen and auto-generation; needs no API key.
 [ai]

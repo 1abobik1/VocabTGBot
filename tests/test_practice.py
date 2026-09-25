@@ -2,6 +2,7 @@ import asyncio
 import unittest
 from datetime import datetime, timedelta, timezone
 
+from shared import cards
 from shared import practice as pr
 from shared import srs
 from shared import words as w
@@ -215,6 +216,26 @@ class PracticeFlowTest(unittest.TestCase):
         self.msg("полотенце, диван")
         self.assertEqual([x["en"] for x in self.get("known")], ["towel [ˈtaʊəl]", "couch / sofa [kaʊtʃ / ˈsoʊfə]"])
         self.assertEqual(self.get("queue"), [])  # обе карточки ушли в архив
+
+    def test_weekly_stats_show_practice_mistakes(self):
+        self.seed_practice([("towel [ˈtaʊəl]", "полотенце", None), ("mirror", "зеркало", None), ("sofa", "диван", None)])
+        self.msg("/practice")
+        self.msg("towel, miror, chair")      # верно, опечатка, ошибка
+        self.msg("полотенце, зеркало, стул")  # верно, верно, ошибка
+        log = self.get("plog")
+        self.assertEqual([(x["en"], x["ru_en"], x["en_ru"]) for x in log],
+                         [("towel [ˈtaʊəl]", "ok", "ok"), ("mirror", "near", "ok"), ("sofa", "wrong", "wrong")])
+        self.msg(cards.STATS_BUTTON)
+        text = self.tg.last_text()
+        self.assertIn("🧠 <b>Практика за неделю</b> — слов: 3", text)
+        self.assertIn("RU→EN (писал по-английски): ✅ 1 · 🟡 1 · ❌ 1", text)
+        self.assertIn("EN→RU (писал по-русски): ✅ 2 · 🟡 0 · ❌ 1", text)
+        self.assertIn("Чаще всего ошибки: sofa (2), mirror (1)", text)
+
+    def test_old_practice_is_not_in_the_weekly_stats(self):
+        self.put("plog", [{"at": "2026-09-01T10:00:00+00:00", "en": "old", "ru_en": "wrong", "en_ru": "wrong"}])
+        self.msg(cards.STATS_BUTTON)
+        self.assertIn("Практика за неделю</b>: пока не было", self.tg.last_text())
 
     def test_practice_takes_words_in_batches(self):
         self.bot.schedule = Schedule(practice_batch=2)

@@ -10,7 +10,17 @@ import re
 
 from . import words as w
 
-DEFAULT_MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct"
+# Выбрана по сравнению бесплатных моделей Workers AI (сентябрь 2026): лучшие переводы и
+# упражнения, ~15 нейронов на 5 карточек. DeepSeek V4, Kimi K2.6, GLM 5.3 — только на платном плане.
+DEFAULT_MODEL = "@cf/google/gemma-4-26b-a4b-it"
+
+
+def model_options(model):
+    """Параметры под конкретную модель. Gemma 4 по умолчанию долго «думает» (~100 с и в 8 раз
+    больше токенов); без этого она отвечает за секунды и не хуже по качеству."""
+    if "gemma-4" in (model or ""):
+        return {"chat_template_kwargs": {"enable_thinking": False}}
+    return {}
 LEVELS = ("A1", "A2", "B1", "B2", "C1")
 DEFAULT_LEVEL = "B1"
 MAX_CARDS = 10
@@ -213,15 +223,18 @@ async def generate(ai, level, count, topic=None, existing=(), model=DEFAULT_MODE
         if missing <= 0:
             break
         known = list(existing) + [c["en"] for c in cards]
-        output = await ai.run(model, build_input(level, missing, topic, known))
+        output = await ai.run(model, {**build_input(level, missing, topic, known), **model_options(model)})
         cards += parse_cards(output, known, limit=missing)
     return cards
 
 
-def build_enrich_input(en, ru):
+def build_enrich_input(en, ru, level=None):
+    system = ENRICH_PROMPT
+    if level:
+        system += f" Keep the example sentences at CEFR level {level}: vocabulary and grammar a {level} learner understands."
     return {
         "messages": [
-            {"role": "system", "content": ENRICH_PROMPT},
+            {"role": "system", "content": system},
             {"role": "user", "content": f"Word: {en}\nRussian translation: {ru}"},
         ],
         "max_tokens": 500,
@@ -238,10 +251,12 @@ def parse_enrichment(output):
     return examples, synonyms
 
 
-async def enrich(ai, en, ru, model=DEFAULT_MODEL):
+async def enrich(ai, en, ru, model=DEFAULT_MODEL, level=None):
     """Examples and synonyms for a word the user added by hand. Empty lists if nothing usable."""
     for _ in range(2):
-        examples, synonyms = parse_enrichment(await ai.run(model, build_enrich_input(en, ru)))
+        examples, synonyms = parse_enrichment(
+            await ai.run(model, {**build_enrich_input(en, ru, level), **model_options(model)})
+        )
         if examples:
             return examples, synonyms
     return [], []

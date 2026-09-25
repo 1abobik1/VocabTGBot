@@ -14,12 +14,15 @@ GENERATE_BUTTON = "🤖 AI-Генерация"
 PRACTICE_BUTTON = "🧠 Практика"
 STATS_BUTTON = "📊 Статистика"
 HELP_BUTTON = "❓ Помощь"
+SETTINGS_BUTTON = "⚙️ Настройки"
+LEVEL_BUTTON = "🎚 Уровень"
+BACK_BUTTON = "⬅️ Назад"
 MENU_BUTTON = "Меню"
 CANCEL_BUTTON = "Отмена"
 # Texts of older keyboards still on users' screens until the new one arrives.
 LEGACY_BUTTONS = {"Карточка сейчас": NEXT_BUTTON, "Повторить слова": REVIEW_BUTTON, "🤖 Сгенерировать": GENERATE_BUTTON}
 # Bump when main_keyboard() changes: every user gets the new keyboard with their next reply.
-KEYBOARD_VERSION = 2
+KEYBOARD_VERSION = 3
 
 ARCHIVE_PATH = (
     "Как слово попадает в архив:\n"
@@ -43,14 +46,18 @@ HELP_TEXT = (
     "Если на прошлую карточку ещё нет ответа, пришлёт её повторно.\n\n"
     f"{REVIEW_BUTTON} — список выученных слов, новые сверху. Пришли номера забытых "
     "(например <code>2 5 7</code>) — они вернутся в очередь и пройдут весь путь заново.\n\n"
-    f"{GENERATE_BUTTON} — ИИ подберёт новые карточки: выбери уровень A1–C1 и количество. "
+    f"{GENERATE_BUTTON} — ИИ подберёт новые карточки: выбери количество, уровень по умолчанию общий. "
     "С темой — командой <code>/gen 5 путешествия</code>. Карточки приходят по одной на проверку: "
     "«В очередь», «Исправить» или «Удалить». Если очередь пуста, ИИ сам предложит слово "
     "за 20 минут до карточки по расписанию.\n\n"
     f"{PRACTICE_BUTTON} — написать слова, прошедшие интервальные повторы: сначала по-английски, "
     "потом по-русски, потом по желанию предложения. Верно — в архив, опечатка — завтра ещё одна "
     "карточка, ошибка — слово учится заново. Сама запускается каждый вечер в 22:30, по 7 слов.\n\n"
-    f"{STATS_BUTTON} — сколько слов выучено за неделю, сколько в очереди и ждут практики.\n\n"
+    f"<b>{SETTINGS_BUTTON}</b> — редкие действия:\n"
+    f"{LEVEL_BUTTON} — общий уровень A1–C1: по нему ИИ подбирает слова, примеры и упражнения.\n"
+    f"{STATS_BUTTON} — сколько слов выучено за неделю, что в очереди и где ошибки на практике. "
+    "Приходит сама по воскресеньям.\n"
+    f"{REVIEW_BUTTON} и {HELP_BUTTON} — тоже здесь. {BACK_BUTTON} — в главное меню.\n\n"
     "<b>Расписание</b>: 14 слотов в день с 10:00 до 23:00, из них 6 — под новые слова. "
     "«Не знаю» не ставит слово следующим: оно вернётся через 30 минут, потом через 2 часа, потом завтра, "
     "и показывается не больше 3 раз в день. «Знаю» отправляет слово на повтор через сутки, "
@@ -128,25 +135,45 @@ def inbox_keyboard(word):
     return {"inline_keyboard": rows}
 
 
-def render_generate_menu(level):
+LEVELS = ("A1", "A2", "B1", "B2", "C1")
+
+
+def _level_row(current, prefix):
+    return [{"text": f"• {lv} •" if lv == current else lv, "callback_data": f"{prefix}:{lv}"} for lv in LEVELS]
+
+
+def render_generate_menu(level, own=False):
+    """`own` — у генерации свой уровень, отличный от общего."""
+    where = "свой для генерации" if own else f"как общий, сменить общий: {LEVEL_BUTTON}"
     return (
         f"{GENERATE_BUTTON}\n\n"
-        f"Уровень: <b>{level}</b> — сменить можно кнопками ниже.\n"
+        f"Уровень: <b>{level}</b> ({where}).\n"
         "Сколько карточек сгенерировать?\n\n"
         "С темой своими словами: <code>/gen 5 путешествия</code> или <code>/gen 3 C1 работа в офисе</code>"
     )
 
 
-def generate_keyboard(level):
-    return {
-        "inline_keyboard": [
-            [{"text": f"{n} шт.", "callback_data": f"gen:{n}"} for n in (1, 3, 5, 10)],
-            [
-                {"text": f"• {lv} •" if lv == level else lv, "callback_data": f"lv:{lv}"}
-                for lv in ("A1", "A2", "B1", "B2", "C1")
-            ],
-        ]
-    }
+def generate_keyboard(level, own=False):
+    rows = [
+        [{"text": f"{n} шт.", "callback_data": f"gen:{n}"} for n in (1, 3, 5, 10)],
+        _level_row(level, "lv"),
+    ]
+    if own:
+        rows.append([{"text": "↩︎ Как общий уровень", "callback_data": "lv:auto"}])
+    return {"inline_keyboard": rows}
+
+
+def render_level_menu(level):
+    return (
+        f"{LEVEL_BUTTON}\n\n"
+        f"Общий уровень английского: <b>{level}</b>.\n"
+        "По нему ИИ подбирает новые слова, примеры к словам, которые ты добавляешь сам, "
+        f"и упражнения. В «{GENERATE_BUTTON}» можно выбрать другой уровень только для генерации."
+    )
+
+
+def level_keyboard(level):
+    return {"inline_keyboard": [_level_row(level, "glv")]}
 
 
 def cancel_keyboard():
@@ -169,11 +196,23 @@ def card_keyboard(word):
 
 
 def main_keyboard():
+    """Главное меню — только то, чем пользуешься каждый день; редкое спрятано в «Настройки»."""
     return {
         "keyboard": [
-            [{"text": NEXT_BUTTON}, {"text": REVIEW_BUTTON}],
-            [{"text": GENERATE_BUTTON}, {"text": PRACTICE_BUTTON}],
-            [{"text": STATS_BUTTON}, {"text": HELP_BUTTON}],
+            [{"text": NEXT_BUTTON}, {"text": PRACTICE_BUTTON}],
+            [{"text": GENERATE_BUTTON}, {"text": SETTINGS_BUTTON}],
+        ],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }
+
+
+def settings_keyboard():
+    return {
+        "keyboard": [
+            [{"text": LEVEL_BUTTON}, {"text": STATS_BUTTON}],
+            [{"text": REVIEW_BUTTON}, {"text": HELP_BUTTON}],
+            [{"text": BACK_BUTTON}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
@@ -284,3 +323,18 @@ def render_practice_summary(outcome, cheer):
 
 def practice_cheer(count, rng=random):
     return rng.choice(["🎉", "🏆", "🚀", "🌟", "🧠"]) + f" Выучено слов: {count}!"
+
+
+def render_practice_stats(stats, top=5):
+    """Блок недельной статистики: где ошибаешься на практике."""
+    if not stats["sessions_words"]:
+        return "\n\n🧠 <b>Практика за неделю</b>: пока не было."
+    names = {"ru_en": "RU→EN (писал по-английски)", "en_ru": "EN→RU (писал по-русски)"}
+    lines = ["", "", f"🧠 <b>Практика за неделю</b> — слов: {stats['sessions_words']}"]
+    for direction, label in names.items():
+        c = stats["counts"][direction]
+        lines.append(f"{label}: ✅ {c['ok']} · 🟡 {c['near']} · ❌ {c['wrong']}")
+    if stats["worst"]:
+        items = ", ".join(f"{escape(en)} ({n})" for en, n in stats["worst"][:top])
+        lines.append(f"Чаще всего ошибки: {items}")
+    return "\n".join(lines)
