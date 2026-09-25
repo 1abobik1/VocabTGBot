@@ -1,8 +1,9 @@
-"""Свои предложения со словом с карточки — вместо «Знаю»: текстом или голосовым.
+"""Свои предложения со словом с карточки — вместо «Знаю»: текстом или голосовыми.
 
-ИИ разбирает каждое предложение (верно / слово верно, но есть ошибки / слово употреблено неверно)
-и предлагает, как сказать естественнее. Засчитано ли слово, решает код: слово правильно употреблено
-хотя бы в MIN_GOOD предложениях — как «Знаю», иначе — как «Не знаю».
+Предложения можно присылать по одному: каждое сообщение ИИ разбирает сразу (верно / слово верно,
+но есть ошибки / слово употреблено неверно) и предлагает, как сказать естественнее; в первом разборе
+добавляет частую фразу со словом. Всего до MAX_SENTENCES предложений. Засчитано ли слово, решает код:
+слово правильно употреблено хотя бы в MIN_GOOD — как «Знаю», иначе — как «Не знаю».
 """
 
 import base64
@@ -12,7 +13,6 @@ from . import ai
 from . import practice as pr
 from .text import clean, has_cyrillic, has_foreign_script, strip_extras
 
-MIN_SENTENCES = 2
 MAX_SENTENCES = 4
 MIN_GOOD = 2
 MAX_VOICE_SECONDS = 60
@@ -43,12 +43,12 @@ def check_input(sentences):
     """Текст ошибки для пользователя или None, если предложения можно отдавать ИИ."""
     if any(has_cyrillic(s) for s in sentences):
         return "Предложения нужны на английском."
-    if len(sentences) < MIN_SENTENCES:
-        return f"Нужно хотя бы {MIN_SENTENCES} предложения со словом — пришли их одним сообщением."
+    if not sentences:
+        return "Не нашёл предложения — нужно хотя бы пару слов со словом с карточки."
     return None
 
 
-def build_request(word, sentences, level, spoken=False, model=ai.DEFAULT_MODEL):
+def build_request(word, sentences, level, spoken=False, with_example=False, model=ai.DEFAULT_MODEL):
     en, ru = strip_extras(word["en"]), strip_extras(word["ru"])
     system = (
         f"You are a kind English teacher for a native Russian speaker at CEFR level {level}. "
@@ -59,9 +59,13 @@ def build_request(word, sentences, level, spoken=False, model=ai.DEFAULT_MODEL):
         f"'{WRONG}' — the target word is missing, has a different meaning or is used in a way people do not say. "
         "'corrected': how a native speaker would say it, with minimal changes and the same meaning "
         "(the same sentence if it is already correct). 'comment_ru': one short sentence in natural Russian about "
-        "the main mistake, addressing the learner as «ты»; empty if there is none. 'tip_ru': one short tip in Russian on how else the word is "
-        "used, with a short English example."
+        "the main mistake, addressing the learner as «ты»; empty if there is none."
     )
+    if with_example:
+        system += (" 'example_en': one short, common sentence that native speakers often say with the target word — "
+                   "a phrase worth memorising, different from the learner's; 'example_ru': its natural Russian translation.")
+    else:
+        system += " Leave 'example_en' and 'example_ru' empty."
     if spoken:
         system += (" The sentences were transcribed from the learner's speech: ignore punctuation, capital letters "
                    "and obvious transcription slips.")
@@ -70,7 +74,8 @@ def build_request(word, sentences, level, spoken=False, model=ai.DEFAULT_MODEL):
 
 
 def parse(output, sentences):
-    """[{'sentence', 'verdict', 'corrected', 'comment'}] по порядку предложений и совет; None — ответ негоден."""
+    """([{'sentence', 'verdict', 'corrected', 'comment'}] по порядку предложений, частая фраза {'en', 'ru'} или None);
+    None — ответ негоден."""
     review = ai.parse(ai.CompositionReview, output)
     if review is None or len(review.sentences) < len(sentences):
         return None
@@ -86,10 +91,11 @@ def parse(output, sentences):
         if comment and (not has_cyrillic(comment) or has_foreign_script(comment)):
             comment = ""
         items.append({"sentence": sentence, "verdict": verdict, "corrected": corrected, "comment": comment})
-    tip = clean(review.tip_ru)
-    if not has_cyrillic(tip) or has_foreign_script(tip):
-        tip = ""
-    return items, tip
+    example = {"en": clean(review.example_en), "ru": clean(review.example_ru)}
+    if (not example["en"] or has_cyrillic(example["en"]) or not has_cyrillic(example["ru"])
+            or has_foreign_script(example["en"] + example["ru"])):
+        example = None
+    return items, example
 
 
 def changed(item):
@@ -97,14 +103,19 @@ def changed(item):
     return pr.normalize(item["corrected"]) != pr.normalize(item["sentence"])
 
 
+def good_count(items):
+    return sum(1 for x in items if x["verdict"] in (CORRECT, GRAMMAR))
+
+
 def passed(items):
-    return sum(1 for x in items if x["verdict"] in (CORRECT, GRAMMAR)) >= MIN_GOOD
+    return good_count(items) >= MIN_GOOD
 
 
-async def review(ai_client, word, sentences, level, spoken=False, model=ai.DEFAULT_MODEL):
+async def review(ai_client, word, sentences, level, spoken=False, with_example=False, model=ai.DEFAULT_MODEL):
     """Разбор с одной повторной попыткой, если модель ответила не по форме; None — не вышло."""
+    request = build_request(word, sentences, level, spoken, with_example, model)
     for _ in range(2):
-        result = parse(await ai_client.run(model, build_request(word, sentences, level, spoken, model)), sentences)
+        result = parse(await ai_client.run(model, request), sentences)
         if result is not None:
             return result
     return None

@@ -13,6 +13,7 @@ KNOWN_BUTTON = "Знаю"
 UNKNOWN_BUTTON = "Не знаю"
 ARCHIVE_BUTTON = "📥 В архив"
 COMPOSE_BUTTON = "🗣 Составить предложения"
+COMPOSE_DONE_BUTTON = "🏁 Готово"
 NEXT_BUTTON = "🃏 Карточка сейчас"
 REVIEW_BUTTON = "🔁 Повтор архивных слов"
 GENERATE_BUTTON = "🤖 AI-Генерация"
@@ -51,9 +52,9 @@ HELP_TEXT = (
     "Если примеров и синонимов нет, их придумает ИИ и покажет карточку на проверку: "
     "«В очередь», «Исправить», «Без примеров» или «Удалить».\n\n"
     "<b>Кнопки</b>\n"
-    f"{COMPOSE_BUTTON} под карточкой — вместо «{KNOWN_BUTTON}»: напиши 2–3 своих предложения со словом "
-    "или запиши голосовое. ИИ разберёт каждое и покажет, как сказать естественнее; слово правильно "
-    f"употреблено хотя бы в двух — засчитается как «{KNOWN_BUTTON}».\n\n"
+    f"{COMPOSE_BUTTON} под карточкой — вместо «{KNOWN_BUTTON}»: свои предложения со словом, текстом или "
+    "голосовыми, можно по одному. ИИ сразу разбирает каждое и показывает, как сказать естественнее, "
+    f"плюс частую фразу со словом. До 4 предложений; верно в двух — засчитается как «{KNOWN_BUTTON}».\n\n"
     f"{NEXT_BUTTON} — следующая карточка из очереди прямо сейчас, не дожидаясь расписания. "
     "Если на прошлую карточку ещё нет ответа, пришлёт её повторно.\n\n"
     f"{REVIEW_BUTTON} — список выученных слов, новые сверху. Пришли номера забытых "
@@ -220,39 +221,58 @@ def render_compose_prompt(word):
     else:
         target = f"<b>{escape(word['en'])}</b> — {_spoiler(word['ru'])}"
     return (
-        f"🗣 Составь 2–3 предложения со словом {target}\n\n"
-        f"Напиши их одним сообщением или запиши голосовое (до {compose.MAX_VOICE_SECONDS} секунд). "
-        f"Слово правильно употреблено хотя бы в {compose.MIN_GOOD} — засчитаю как «{KNOWN_BUTTON}», "
-        f"иначе — как «{UNKNOWN_BUTTON}»."
+        f"🗣 Составь предложение со словом {target}\n\n"
+        "Напиши его или запиши голосовое — можно по одному предложению, каждое разберу сразу. "
+        f"До {compose.MAX_SENTENCES} предложений; слово верно хотя бы в {compose.MIN_GOOD} — засчитаю как "
+        f"«{KNOWN_BUTTON}», иначе — как «{UNKNOWN_BUTTON}». «{COMPOSE_DONE_BUTTON}» — закончить."
     )
 
 
-def compose_keyboard():
-    return {"inline_keyboard": [[{"text": CANCEL_BUTTON, "callback_data": "sc"}]]}
+def compose_keyboard(done=False):
+    row = [{"text": COMPOSE_DONE_BUTTON, "callback_data": "sd"}] if done else []
+    row.append({"text": CANCEL_BUTTON, "callback_data": "sc"})
+    return {"inline_keyboard": [row]}
 
 
 _COMPOSE_MARKS = {compose.CORRECT: "✅", compose.GRAMMAR: "🟡", compose.WRONG: "❌"}
 
 
-def render_compose_review(word, items, tip, ok, transcript=None):
-    lines = [f"🗣 <b>Разбор</b> · {escape(word['en'])}"]
+def render_compose_review(items, start=1, example=None, transcript=None, skipped=0):
+    """Разбор только что присланных предложений; нумерация продолжает прежние."""
+    lines = []
     if transcript:
-        lines += ["", f"🎙 Услышал: <i>{escape(transcript)}</i>"]
-    lines.append("")
-    for number, item in enumerate(items, start=1):
+        lines += [f"🎙 Услышал: <i>{escape(transcript)}</i>", ""]
+    for number, item in enumerate(items, start=start):
         line = f"{number}. {_COMPOSE_MARKS[item['verdict']]} {escape(item['sentence'])}"
         if compose.changed(item):
             line += f"\n→ <b>{escape(item['corrected'])}</b>"
         if item["comment"]:
             line += f"\n<i>{escape(item['comment'])}</i>"
         lines.append(line)
-    if tip:
-        lines += ["", f"💡 {escape(tip)}"]
-    lines.append("")
-    lines.append(f"Засчитано как «{KNOWN_BUTTON}»." if ok else
-                 f"Слово употреблено верно меньше чем в {compose.MIN_GOOD} предложениях — "
-                 f"считаю как «{UNKNOWN_BUTTON}», слово вернётся позже.")
+    if skipped:
+        lines += ["", f"<i>Лишние предложения ({skipped}) не учёл: максимум {compose.MAX_SENTENCES}.</i>"]
+    if example:
+        lines += ["", f"📌 Так часто говорят: <b>{escape(example['en'])}</b>\n{escape(example['ru'])}"]
     return "\n".join(lines)
+
+
+def render_compose_progress(items):
+    good, total = compose.good_count(items), len(items)
+    text = f"Верно: {good} из {total}. "
+    if compose.passed(items):
+        text += f"Уже засчитывается — «{COMPOSE_DONE_BUTTON}» или ещё предложение (до {compose.MAX_SENTENCES})."
+    else:
+        text += (f"Нужно верных: {compose.MIN_GOOD}. Пришли ещё предложение текстом или голосом "
+                 f"(осталось {compose.MAX_SENTENCES - total}).")
+    return text
+
+
+def render_compose_result(items):
+    good, total = compose.good_count(items), len(items)
+    if compose.passed(items):
+        return f"🏁 Верно {good} из {total} — засчитано как «{KNOWN_BUTTON}»."
+    return (f"🏁 Верно {good} из {total} — меньше {compose.MIN_GOOD}, считаю как «{UNKNOWN_BUTTON}»: "
+            "слово вернётся позже.")
 
 
 def main_keyboard():

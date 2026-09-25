@@ -84,7 +84,9 @@ class SentenceReview:
 @dataclass
 class CompositionReview:
     sentences: list[SentenceReview]
-    tip_ru: str = ""
+    # Частая фраза со словом, чтобы запомнить, — только в первом разборе.
+    example_en: str = ""
+    example_ru: str = ""
 
 
 # ---- образец ответа из dataclass ---------------------------------------------------

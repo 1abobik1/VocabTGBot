@@ -86,6 +86,7 @@ CALLBACK_ROUTES = {
     "a": CallbackRoute(lambda bot, ctx, value, data: bot._answer_card(ctx, "a", value), answer=False),
     # Кнопки карточки остаются: пока предложения не прислал, можно ответить и обычным «Знаю».
     "sx": CallbackRoute(lambda bot, ctx, value, data: bot._compose_start(ctx, value)),
+    "sd": CallbackRoute(lambda bot, ctx, value, data: bot._compose_done(ctx)),
     "sc": CallbackRoute(lambda bot, ctx, value, data: bot._compose_cancel(ctx), drop=True),
 }
 
