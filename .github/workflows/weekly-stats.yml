@@ -1,9 +1,10 @@
-name: Weekly stats
+name: Weekly stats (manual)
+
+# The weekly report is sent by the Cloudflare Worker cron (REPORT_DAY / REPORT_TIME in
+# worker/wrangler.toml): it includes the AI review of weak spots, and Workers AI is only
+# reachable from the Worker. This workflow stays as a manual fallback without the AI review.
 
 on:
-  schedule:
-    # Sunday 20:00 MSK = Sunday 17:00 UTC (MSK = UTC+3). Fields: min hour day month weekday(0=Sun).
-    - cron: "0 17 * * 0"
   workflow_dispatch: {}
 
 concurrency:

@@ -23,12 +23,12 @@ flowchart LR
     U[You<br/>Telegram]
     subgraph CF [Cloudflare · free plan]
       C[Cron Trigger<br/>every minute]
-      W[Worker · Python<br/>webhook, schedule,<br/>practice, catch-up]
+      W[Worker · Python<br/>webhook, schedule, practice,<br/>exercises, weekly report]
       AI[Workers AI<br/>Gemma 4 26B]
-      KV[(KV<br/>queue, archive,<br/>practice, settings)]
+      KV[(KV<br/>words, practice, mistake<br/>log, settings)]
     end
     subgraph GH [GitHub]
-      A[GitHub Actions<br/>Sunday stats,<br/>tests]
+      A[GitHub Actions<br/>tests, manual runs]
     end
     U -- "webhook with a secret header" --> W
     W -. "cards, replies" .-> U
@@ -36,7 +36,6 @@ flowchart LR
     W <-- "read / write" --> KV
     W -- "AI binding, no keys" --> AI
     A -- "REST API" --> KV
-    A -. "stats" .-> U
 ```
 
 ## Stack
@@ -47,7 +46,7 @@ flowchart LR
 | Bot and schedule | Cloudflare Workers (Python / Pyodide) + Cron Triggers |
 | Storage | Cloudflare KV |
 | AI | Cloudflare Workers AI, Gemma 4 26B |
-| Stats and tests | GitHub Actions |
+| Tests | GitHub Actions |
 | Messenger | Telegram Bot API |
 
 ## Features
@@ -60,7 +59,9 @@ flowchart LR
 - **AI card generation** on a topic in your own words: `/gen 5 travel`. A generated card first comes to you for review — you can edit or delete it. The bot remembers every word it has ever offered, deleted ones included, so the same word never comes twice. If the queue is empty, the AI suggests a new word on its own.
 - **Manual adding** in a single message: `apple - яблоко` plus examples and synonyms. Either language can come first; duplicates are rejected. If you give no examples or synonyms, the AI writes them and shows the card for review — accept it, edit it, or keep the word without examples.
 - **A global language level** (A1–C1): the AI picks new words and examples to match it. Generation can have its own level and follows the global one by default.
-- **Weekly stats**: how many words were learned, what is in the queue and where you make mistakes in practice — counts per direction and the words you get wrong most often.
+- **Exercises every day at 20:00** — 5 fill-the-gap tasks: prepositions and articles with buttons, verb tenses, word forms and words from your own vocabulary typed. They wait until you finish them and never get in the way of cards. The AI picks topics for your level, and «🧩 Темы упражнений» (Exercise topics) lets you keep only the ones you want. A task that looks ambiguous can be marked «🤔 Спорное» (Disputed) — it won't count.
+- **AI analysis of weak spots**: the bot remembers which rules you get wrong, and about 60% of the next batch targets exactly those — the same rule in different sentences and constructions. A mistake in a task with one of your words moves that word one interval back.
+- **Weekly report on Sundays at 21:00**: words learned, what is in the queue, practice mistakes per direction, exercise results, weak spots and a short AI review with advice on what to focus on.
 - **Archive review**: the bot sends the list of learned words; reply with the numbers of the ones you've forgotten and they go back into learning.
 - **Access for friends** via `/allow` — each person has their own words.
 
@@ -69,11 +70,12 @@ flowchart LR
 The main menu holds what you use every day:
 
 ```
-[ 🃏 Карточка сейчас ] [ 🧠 Практика   ]
-[ 🤖 AI-Генерация    ] [ ⚙️ Настройки  ]
+[ 🃏 Карточка сейчас ] [ 🧠 Практика     ]
+[ ✍️ Упражнения      ] [ 🤖 AI-Генерация ]
+[ ⚙️ Настройки ]
 ```
 
-(Card now, Practice, AI generation, Settings.) «⚙️ Настройки» keeps the rarely used ones: 🎚 Level, 📊 Stats, 🔁 Review archived words, ❓ Help and ⬅️ Back.
+(Card now, Practice, Exercises, AI generation, Settings.) «⚙️ Настройки» keeps the rarely used ones: 🎚 Level, 🧩 Exercise topics, 📊 Stats, 🔁 Review archived words, ❓ Help and ⬅️ Back.
 
 ## A word's path
 
@@ -88,10 +90,9 @@ The main menu holds what you use every day:
 
 The «📥 В архив» button under a card skips steps 2–4: the word goes straight to the archive.
 
-## Planned
+## Why Gemma 4
 
-- **Topic exercises** once a day at 20:00 Moscow time: fill in a preposition, put a verb in the right tense, fill in a word from your own vocabulary, articles, word forms. The AI picks topics for your level, or you choose your own. Exercises don't get in the way of cards.
-- **AI analysis of weak spots**: the bot remembers which rules you get wrong and gives you more exercises on exactly those — the same rule in different sentences and constructions. Once a week, a short review with advice.
+The model was chosen by comparing the free Workers AI models on real tasks: Gemma 4 26B produced 16 correct exercises out of 16 at B1 and C1 and the best card translations, at ~3 "neurons" per card out of 10,000 free per day. DeepSeek V4, Kimi K2.6 and GLM 5.3 are paid-plan only, while Llama 4 Scout and gpt-oss got the rules themselves wrong.
 
 ## Development commands
 

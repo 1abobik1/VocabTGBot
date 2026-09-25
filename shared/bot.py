@@ -8,6 +8,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 from . import cards
+from . import exercises as ex
 from . import generator
 from . import practice as pr
 from . import srs
@@ -60,6 +61,21 @@ def practice_log_key(username):
 
 # Сколько записей практики хранить (больше нужного на неделю — с запасом).
 PRACTICE_LOG_LIMIT = 400
+
+
+def exercise_session_key(username):
+    """Текущие упражнения: {"items": [...], "i": номер текущего, "results": [...]}."""
+    return f"exsession:{username}"
+
+
+def mistake_log_key(username):
+    """Журнал упражнений: [{"at", "rule", "verdict", "sentence", "answer", "given"}] — для слабых мест."""
+    return f"mlog:{username}"
+
+
+def advice_key(username):
+    """Последний недельный ИИ-разбор: {"at", "text"}."""
+    return f"advice:{username}"
 
 
 def seen_key(username):
@@ -225,7 +241,8 @@ class Bot:
             return
         await self.send_card(username, chat_id, now=now, force=True)
 
-    async def send_stats(self, username, chat_id):
+    async def send_stats(self, username, chat_id, weekly=False):
+        """Статистика; `weekly` — воскресный отчёт с новым ИИ-разбором слабых мест."""
         name = normalize_username(username)
         now = self._now()
         today = srs.local_date(self.schedule, now) if self.schedule else ""
@@ -234,12 +251,29 @@ class Bot:
         waiting = await self.repo.get(practice_key(name), [])
         day = await self._day_state(name, today)
         practice = pr.weekly_practice_stats(await self.repo.get(practice_log_key(name), []), now)
+        mlog = await self.repo.get(mistake_log_key(name), [])
+        weak = ex.weak_spots(mlog, now)
+        exercise_stats = ex.weekly_stats(mlog, now)
+        advice = (await self.repo.get(advice_key(name), {})).get("text")
+        if weekly and self.ai is not None:
+            try:
+                fresh = await ex.advise(
+                    self.ai, await self._global_level(name), weak, practice["worst"], exercise_stats["counts"],
+                    model=self.ai_model,
+                )
+            except Exception as error:
+                print(f"advice failed: {error!r}")
+                fresh = None
+            if fresh:
+                advice = fresh
+                await self.repo.put(advice_key(name), {"at": now.isoformat(), "text": fresh})
         await self.send(
             chat_id,
             cards.render_stats(
                 w.weekly_stats(known), srs.stats(queue, now, today), len(waiting), day["new"], self._new_quota()
             )
-            + cards.render_practice_stats(practice),
+            + cards.render_practice_stats(practice)
+            + cards.render_exercise_stats(exercise_stats, weak, advice),
         )
 
     async def _is_blocked(self, username, queue):
@@ -298,6 +332,14 @@ class Bot:
             for user in await self._users_with_chat():
                 if await self.start_practice(normalize_username(user["username"]), user["chat_id"], quiet=True):
                     result.append(user["username"])
+        if self.schedule.is_exercise_time(now):
+            for user in await self._users_with_chat():
+                if await self.start_exercises(normalize_username(user["username"]), user["chat_id"], auto=True):
+                    result.append(user["username"])
+        if self.schedule.is_report_time(now):
+            for user in await self._users_with_chat():
+                await self.send_stats(user["username"], user["chat_id"], weekly=True)
+                result.append(user["username"])
         if self.schedule.is_slot(now):
             result += await self.broadcast_cards(count_missed=True, now=now)
         elif self.ai is not None and self.schedule.is_slot(now + AUTOGEN_LEAD):
@@ -364,6 +406,10 @@ class Bot:
             await self.repo.put(state_key(username), {})
             await self.tg.call("answerCallbackQuery", {"callback_query_id": query["id"]})
             await self.send(chat_id, "Режим добавления слов.\n\n" + cards.HELP_TEXT, cards.main_keyboard())
+            return
+        if data.startswith(("xo:", "xn:", "xd:", "xt:")):
+            await self.tg.call("answerCallbackQuery", {"callback_query_id": query["id"]})
+            await self._exercise_callback(username, chat_id, data, message_id)
             return
         if data == "px":  # skip the optional sentences round
             await self.tg.call("answerCallbackQuery", {"callback_query_id": query["id"]})
@@ -475,6 +521,11 @@ class Bot:
                             cards.settings_keyboard())
         elif text == cards.BACK_BUTTON:
             await self.send(chat_id, "Главное меню.", cards.main_keyboard())
+        elif command == "/ex" or text == cards.EXERCISE_BUTTON:
+            await self.start_exercises(username, chat_id)
+        elif text == cards.TOPICS_BUTTON:
+            chosen = (await self.repo.get(settings_key(username), {})).get("ex_types") or []
+            await self.send(chat_id, cards.render_topics_menu(chosen), cards.topics_keyboard(chosen))
         elif command == "/practice" or text == cards.PRACTICE_BUTTON:
             if not await self.start_practice(username, chat_id):
                 await self.send(chat_id, "Для практики пока нет слов: они появятся после «Знаю» в обе стороны.")
@@ -487,10 +538,13 @@ class Bot:
             state = await self.repo.get(state_key(username), {})
             numbers = w.parse_numbers(text)
             session = None if state.get("mode") == "edit" else await self.repo.get(session_key(username), None)
+            exercise = None if state.get("mode") == "edit" or session else await self._typed_exercise(username)
             if state.get("mode") == "edit":
                 await self._inbox_edit_finish(username, chat_id, state, text)
             elif session:
                 await self._practice_answer(username, chat_id, session, text)
+            elif exercise is not None:
+                await self._exercise_answer(username, chat_id, exercise[0], exercise[1], text)
             elif numbers is not None and state.get("mode") == "review":
                 await self._finish_review(username, chat_id, state, numbers)
             else:
@@ -882,3 +936,157 @@ class Bot:
         cheer = cards.practice_cheer(len(outcome[pr.OK]))
         await self.send(chat_id, cards.render_practice_summary(outcome, cheer), cards.main_keyboard())
         await self._catch_up(username, chat_id)
+
+    # ---- упражнения ---------------------------------------------------------
+
+    async def _vocab_words(self, username, limit=20):
+        """Слова пользователя для заданий «вставь слово»: из очереди, практики и архива."""
+        words = [
+            pr.strip_extras(x["en"])
+            for key in (queue_key, practice_key, known_key)
+            for x in await self.repo.get(key(username), [])
+        ]
+        words = [x for x in dict.fromkeys(words) if x and len(x) > 2]
+        return words[-limit:]
+
+    async def start_exercises(self, username, chat_id, auto=False):
+        """Упражнения на сегодня. Незаконченные не пересоздаются, а присылаются снова."""
+        session = await self.repo.get(exercise_session_key(username), {})
+        if session.get("items"):
+            if auto:
+                await self.send(chat_id, "⏰ Упражнения ещё ждут — продолжим:")
+            await self._send_exercise(chat_id, session)
+            return True
+        if self.ai is None:
+            if not auto:
+                await self.send(chat_id, "Упражнения недоступны: Workers AI не подключён.")
+            return False
+        now = self._now()
+        settings = await self.repo.get(settings_key(username), {})
+        vocab = await self._vocab_words(username)
+        types = ex.enabled_types(settings, has_vocab=len(vocab) >= 3)
+        if not auto:
+            await self.send(chat_id, "⏳ Готовлю упражнения…")
+        try:
+            items = await ex.generate(
+                self.ai, await self._global_level(username), ex.BATCH, types, vocab,
+                await self.repo.get(mistake_log_key(username), []), now, model=self.ai_model,
+            )
+        except Exception as error:
+            print(f"exercise generation failed: {error!r}")
+            items = []
+        if not items:
+            if not auto:
+                await self.send(chat_id, "😕 Не получилось подготовить упражнения. Попробуй чуть позже.")
+            return False
+        session = {"date": now.isoformat(), "items": items, "i": 0, "results": []}
+        await self.repo.put(exercise_session_key(username), session)
+        await self._send_exercise(chat_id, session)
+        return True
+
+    async def _send_exercise(self, chat_id, session):
+        index = session["i"]
+        exercise = session["items"][index]
+        await self.send(
+            chat_id,
+            cards.render_exercise(exercise, index, len(session["items"])),
+            cards.exercise_keyboard(exercise, index),
+        )
+
+    async def _typed_exercise(self, username):
+        """(сессия, номер), если сейчас ждём ответ текстом, иначе None."""
+        session = await self.repo.get(exercise_session_key(username), {})
+        if not session.get("items"):
+            return None
+        exercise = session["items"][session["i"]]
+        if ex.TYPES[exercise["type"]][1]:
+            return None  # это задание с кнопками
+        return session, session["i"]
+
+    async def _exercise_callback(self, username, chat_id, data, message_id):
+        action, _, rest = data.partition(":")
+        if action == "xt":
+            await self._toggle_topic(username, chat_id, rest, message_id)
+            return
+        session = await self.repo.get(exercise_session_key(username), {})
+        index, _, option = rest.partition(":")
+        if not session.get("items") or not index.isdigit() or int(index) != session["i"]:
+            await self.send(chat_id, "Это упражнение уже неактуально.")
+            return
+        if message_id is not None:
+            await self._drop_buttons(chat_id, message_id)
+        exercise = session["items"][session["i"]]
+        if action == "xd":
+            await self._record_exercise(username, chat_id, session, "", "disputed")
+        elif action == "xn":
+            await self._exercise_answer(username, chat_id, session, session["i"], "", dont_know=True)
+        elif option.isdigit() and int(option) < len(exercise.get("options", [])):
+            await self._exercise_answer(username, chat_id, session, session["i"], exercise["options"][int(option)])
+
+    async def _exercise_answer(self, username, chat_id, session, index, given, dont_know=False):
+        exercise = session["items"][index]
+        verdict = pr.WRONG if dont_know else ex.grade(exercise, given)
+        await self.send(chat_id, cards.render_exercise_feedback(exercise, given, verdict))
+        await self._record_exercise(username, chat_id, session, given, verdict)
+
+    async def _record_exercise(self, username, chat_id, session, given, verdict):
+        exercise = session["items"][session["i"]]
+        session["results"].append({"verdict": verdict, "given": given})
+        if verdict == "disputed":
+            await self.send(chat_id, "🤔 Убрал это упражнение, в статистику оно не пойдёт.")
+        session["i"] += 1
+        if session["i"] < len(session["items"]):
+            await self.repo.put(exercise_session_key(username), session)
+            await self._send_exercise(chat_id, session)
+        else:
+            await self._finish_exercises(username, chat_id, session)
+
+    async def _finish_exercises(self, username, chat_id, session):
+        now = self._now()
+        log = await self.repo.get(mistake_log_key(username), [])
+        rollback = []
+        for exercise, result in zip(session["items"], session["results"]):
+            if result["verdict"] == "disputed":
+                continue
+            log.append({
+                "at": now.isoformat(), "rule": exercise["rule"], "verdict": result["verdict"],
+                "sentence": exercise["sentence"], "answer": exercise["answer"], "given": result["given"],
+            })
+            if exercise["type"] == "vocab" and result["verdict"] == pr.WRONG:
+                rollback.append(exercise["word"])
+        await self.repo.put(mistake_log_key(username), log[-ex.MISTAKE_LOG_LIMIT:])
+        if rollback:
+            await self._roll_back_words(username, rollback, now)
+        await self.repo.put(exercise_session_key(username), {})
+        await self.send(chat_id, cards.render_exercise_summary(session["results"], ex.weak_spots(log, now)))
+
+    async def _roll_back_words(self, username, words, now):
+        """Ошибка в «вставь слово» откатывает слово на один интервал и показывает его завтра."""
+        targets = {w.compact(x) for x in words}
+        queue = [srs.prepare(x, now) for x in await self.repo.get(queue_key(username), [])]
+        changed = False
+        for word in queue:
+            if w.compact(pr.strip_extras(word["en"])) in targets:
+                word["box"] = max(0, word.get("box", 0) - 1)
+                if self.schedule is not None:
+                    srs.postpone_to_tomorrow(word, self.schedule, now)
+                changed = True
+        if changed:
+            await self.repo.put(queue_key(username), queue)
+
+    async def _toggle_topic(self, username, chat_id, kind, message_id):
+        settings = await self.repo.get(settings_key(username), {})
+        chosen = [t for t in settings.get("ex_types") or [] if t in ex.TYPES]
+        if kind == "auto":
+            chosen = []
+        elif kind in ex.TYPES:
+            current = chosen or list(ex.TYPES)
+            chosen = [t for t in current if t != kind] if kind in current else current + [kind]
+            if set(chosen) == set(ex.TYPES):
+                chosen = []  # всё включено — снова выбор ИИ
+            if not chosen:
+                chosen = [kind]  # нельзя выключить все темы разом
+        settings["ex_types"] = chosen
+        await self.repo.put(settings_key(username), settings)
+        if message_id is not None:
+            await self._edit_menu(chat_id, message_id, cards.render_topics_menu(chosen), cards.topics_keyboard(chosen))

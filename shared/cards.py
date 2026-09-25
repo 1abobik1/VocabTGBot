@@ -3,6 +3,7 @@
 import random
 from html import escape as _html_escape
 
+from . import exercises as ex
 from .words import current_example
 
 KNOWN_BUTTON = "Знаю"
@@ -15,6 +16,10 @@ PRACTICE_BUTTON = "🧠 Практика"
 STATS_BUTTON = "📊 Статистика"
 HELP_BUTTON = "❓ Помощь"
 SETTINGS_BUTTON = "⚙️ Настройки"
+EXERCISE_BUTTON = "✍️ Упражнения"
+TOPICS_BUTTON = "🧩 Темы упражнений"
+EXERCISE_DONT_KNOW = "🤷 Не знаю"
+EXERCISE_DISPUTE = "🤔 Спорное"
 LEVEL_BUTTON = "🎚 Уровень"
 BACK_BUTTON = "⬅️ Назад"
 MENU_BUTTON = "Меню"
@@ -22,7 +27,7 @@ CANCEL_BUTTON = "Отмена"
 # Texts of older keyboards still on users' screens until the new one arrives.
 LEGACY_BUTTONS = {"Карточка сейчас": NEXT_BUTTON, "Повторить слова": REVIEW_BUTTON, "🤖 Сгенерировать": GENERATE_BUTTON}
 # Bump when main_keyboard() changes: every user gets the new keyboard with their next reply.
-KEYBOARD_VERSION = 3
+KEYBOARD_VERSION = 4
 
 ARCHIVE_PATH = (
     "Как слово попадает в архив:\n"
@@ -50,13 +55,18 @@ HELP_TEXT = (
     "С темой — командой <code>/gen 5 путешествия</code>. Карточки приходят по одной на проверку: "
     "«В очередь», «Исправить» или «Удалить». Если очередь пуста, ИИ сам предложит слово "
     "за 20 минут до карточки по расписанию.\n\n"
+    f"{EXERCISE_BUTTON} — 5 заданий с пропуском: предлоги, времена, слова из твоего словаря, артикли, "
+    "формы слова, фразовые глаголы. Приходят сами в 20:00 и ждут, пока не пройдёшь; карточкам не мешают. "
+    f"Бот запоминает ошибки и чаще даёт задания на слабые правила. «{EXERCISE_DISPUTE}» — если задание "
+    "показалось спорным: оно не засчитается.\n\n"
     f"{PRACTICE_BUTTON} — написать слова, прошедшие интервальные повторы: сначала по-английски, "
     "потом по-русски, потом по желанию предложения. Верно — в архив, опечатка — завтра ещё одна "
     "карточка, ошибка — слово учится заново. Сама запускается каждый вечер в 22:30, по 7 слов.\n\n"
     f"<b>{SETTINGS_BUTTON}</b> — редкие действия:\n"
     f"{LEVEL_BUTTON} — общий уровень A1–C1: по нему ИИ подбирает слова, примеры и упражнения.\n"
-    f"{STATS_BUTTON} — сколько слов выучено за неделю, что в очереди и где ошибки на практике. "
-    "Приходит сама по воскресеньям.\n"
+    f"{TOPICS_BUTTON} — какие типы упражнений давать; по умолчанию все, ИИ подбирает по уровню.\n"
+    f"{STATS_BUTTON} — сколько слов выучено за неделю, что в очереди, ошибки на практике и слабые места "
+    "в упражнениях. Приходит сама по воскресеньям в 21:00 вместе с разбором от ИИ.\n"
     f"{REVIEW_BUTTON} и {HELP_BUTTON} — тоже здесь. {BACK_BUTTON} — в главное меню.\n\n"
     "<b>Расписание</b>: 14 слотов в день с 10:00 до 23:00, из них 6 — под новые слова. "
     "«Не знаю» не ставит слово следующим: оно вернётся через 30 минут, потом через 2 часа, потом завтра, "
@@ -200,7 +210,8 @@ def main_keyboard():
     return {
         "keyboard": [
             [{"text": NEXT_BUTTON}, {"text": PRACTICE_BUTTON}],
-            [{"text": GENERATE_BUTTON}, {"text": SETTINGS_BUTTON}],
+            [{"text": EXERCISE_BUTTON}, {"text": GENERATE_BUTTON}],
+            [{"text": SETTINGS_BUTTON}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
@@ -210,9 +221,9 @@ def main_keyboard():
 def settings_keyboard():
     return {
         "keyboard": [
-            [{"text": LEVEL_BUTTON}, {"text": STATS_BUTTON}],
-            [{"text": REVIEW_BUTTON}, {"text": HELP_BUTTON}],
-            [{"text": BACK_BUTTON}],
+            [{"text": LEVEL_BUTTON}, {"text": TOPICS_BUTTON}],
+            [{"text": STATS_BUTTON}, {"text": REVIEW_BUTTON}],
+            [{"text": HELP_BUTTON}, {"text": BACK_BUTTON}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
@@ -337,4 +348,82 @@ def render_practice_stats(stats, top=5):
     if stats["worst"]:
         items = ", ".join(f"{escape(en)} ({n})" for en, n in stats["worst"][:top])
         lines.append(f"Чаще всего ошибки: {items}")
+    return "\n".join(lines)
+
+
+# ---- упражнения ----------------------------------------------------------------
+
+def render_exercise(exercise, index, total):
+    name, buttons = ex.TYPES[exercise["type"]]
+    hint = "Выбери ответ кнопкой." if buttons else "Напиши ответ сообщением."
+    return (
+        f"✍️ <b>Упражнение {index + 1}/{total}</b> · {name}\n\n"
+        f"{escape(exercise['sentence'])}\n\n<i>{hint}</i>"
+    )
+
+
+def exercise_keyboard(exercise, index):
+    rows = []
+    if ex.TYPES[exercise["type"]][1]:
+        rows.append([{"text": o, "callback_data": f"xo:{index}:{k}"} for k, o in enumerate(exercise["options"])])
+    rows.append([
+        {"text": EXERCISE_DONT_KNOW, "callback_data": f"xn:{index}"},
+        {"text": EXERCISE_DISPUTE, "callback_data": f"xd:{index}"},
+    ])
+    return {"inline_keyboard": rows}
+
+
+def render_exercise_feedback(exercise, given, verdict):
+    answers = " / ".join([exercise["answer"]] + exercise.get("accepted", []))
+    if verdict == "ok":
+        head = f"✅ Верно: <b>{escape(exercise['answer'])}</b>"
+    elif verdict == "near":
+        head = f"🟡 Почти (опечатка): <b>{escape(answers)}</b>"
+    elif given:
+        head = f"❌ Правильно: <b>{escape(answers)}</b> (у тебя: {escape(given)})"
+    else:
+        head = f"❌ Правильно: <b>{escape(answers)}</b>"
+    filled = escape(exercise["sentence"]).replace(ex.GAP, f"<b>{escape(exercise['answer'])}</b>", 1)
+    return f"{head}\n{filled}\n<i>{escape(exercise['explanation'])}</i>"
+
+
+def render_exercise_summary(results, weak):
+    ok = sum(1 for r in results if r["verdict"] == "ok")
+    counted = [r for r in results if r["verdict"] != "disputed"]
+    lines = [f"🏁 <b>Упражнения на сегодня готовы</b>: ✅ {ok} из {len(counted)}"]
+    if weak:
+        lines.append("Подтянуть: " + ", ".join(ex.rule_name(s["rule"]) for s in weak))
+    return "\n".join(lines)
+
+
+def render_topics_menu(chosen):
+    status = "ИИ подбирает по уровню, все темы" if not chosen else "выбраны вручную"
+    return (
+        f"{TOPICS_BUTTON}\n\nСейчас: <b>{status}</b>.\n"
+        "Нажимай на тему, чтобы включить или выключить её. "
+        "«Все по уровню» — вернуть выбор ИИ."
+    )
+
+
+def topics_keyboard(chosen):
+    rows = []
+    for kind, (name, _) in ex.TYPES.items():
+        mark = "✅" if (not chosen or kind in chosen) else "▫️"
+        rows.append([{"text": f"{mark} {name}", "callback_data": f"xt:{kind}"}])
+    rows.append([{"text": "🤖 Все по уровню", "callback_data": "xt:auto"}])
+    return {"inline_keyboard": rows}
+
+
+def render_exercise_stats(stats, weak, advice=None):
+    lines = ["", ""]
+    if not stats["total"]:
+        lines.append("✍️ <b>Упражнения за неделю</b>: пока не было.")
+    else:
+        c = stats["counts"]
+        lines.append(f"✍️ <b>Упражнения за неделю</b> — {stats['total']}: ✅ {c['ok']} · 🟡 {c['near']} · ❌ {c['wrong']}")
+    if weak:
+        items = ", ".join(f"{ex.rule_name(s['rule'])} ({s['wrong']} из {s['count']})" for s in weak)
+        lines.append(f"🔎 Слабые места: {items}")
+    if advice:
+        lines.append(f"💡 {escape(advice)}")
     return "\n".join(lines)

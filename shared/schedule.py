@@ -33,7 +33,13 @@ class Schedule:
         practice_time="22:30",
         new_words_per_day=6,
         practice_batch=7,
+        exercise_time="20:00",
+        report_day="sun",
+        report_time="21:00",
     ):
+        self.exercise_time = _parse_hhmm(exercise_time)
+        self.report_day = WEEKDAYS[str(report_day).strip().lower()[:3]]
+        self.report_time = _parse_hhmm(report_time)
         day = str(practice_day).strip().lower()[:3]
         self.practice_day = None if day in ("dai", "eve", "all", "") else WEEKDAYS[day]
         self.practice_time = _parse_hhmm(practice_time)
@@ -63,6 +69,9 @@ class Schedule:
             "practice_time": env_get("PRACTICE_TIME"),
             "new_words_per_day": env_get("NEW_WORDS_PER_DAY"),
             "practice_batch": env_get("PRACTICE_BATCH"),
+            "exercise_time": env_get("EXERCISE_TIME"),
+            "report_day": env_get("REPORT_DAY"),
+            "report_time": env_get("REPORT_TIME"),
         }
         return cls(**{k: v for k, v in kwargs.items() if v not in (None, "")})
 
@@ -80,6 +89,16 @@ class Schedule:
         if self.practice_day is not None and local.weekday() != self.practice_day:
             return False
         return local.hour * 60 + local.minute == self.practice_time
+
+    def _minute(self, now):
+        local = self._local(now)
+        return local.hour * 60 + local.minute
+
+    def is_exercise_time(self, now):
+        return self._minute(now) == self.exercise_time
+
+    def is_report_time(self, now):
+        return self._local(now).weekday() == self.report_day and self._minute(now) == self.report_time
 
     def describe(self):
         return ", ".join(f"{s // 60:02d}:{s % 60:02d}" for s in self.slots)

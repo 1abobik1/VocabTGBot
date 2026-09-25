@@ -399,11 +399,13 @@ class BotTest(unittest.TestCase):
     def test_settings_menu(self):
         self.msg("/start")
         main = [b["text"] for row in cards.main_keyboard()["keyboard"] for b in row]
-        self.assertEqual(main, [cards.NEXT_BUTTON, cards.PRACTICE_BUTTON, cards.GENERATE_BUTTON, cards.SETTINGS_BUTTON])
+        self.assertEqual(main, [cards.NEXT_BUTTON, cards.PRACTICE_BUTTON, cards.EXERCISE_BUTTON,
+                                cards.GENERATE_BUTTON, cards.SETTINGS_BUTTON])
         self.msg(cards.SETTINGS_BUTTON)
         self.assertEqual(self.tg.sent()[-1]["reply_markup"], cards.settings_keyboard())
         inside = [b["text"] for row in cards.settings_keyboard()["keyboard"] for b in row]
-        for button in (cards.LEVEL_BUTTON, cards.STATS_BUTTON, cards.REVIEW_BUTTON, cards.HELP_BUTTON, cards.BACK_BUTTON):
+        for button in (cards.LEVEL_BUTTON, cards.TOPICS_BUTTON, cards.STATS_BUTTON, cards.REVIEW_BUTTON,
+                       cards.HELP_BUTTON, cards.BACK_BUTTON):
             self.assertIn(button, inside)
         self.msg(cards.BACK_BUTTON)
         self.assertEqual(self.tg.sent()[-1]["reply_markup"], cards.main_keyboard())
