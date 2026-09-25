@@ -305,8 +305,8 @@ class BotTest(unittest.TestCase):
         sent_before = len(self.tg.sent())
         self.msg(cards.NEXT_BUTTON)
         texts = [p["text"] for p in self.tg.sent()[sent_before:]]
-        self.assertTrue(any("Показываю раньше" in t for t in texts), texts)
-        self.assertTrue(any(t.startswith("Яблоко") or t.startswith("Apple") for t in texts), texts)
+        self.assertEqual(len(texts), 1)  # только карточка, без пояснений
+        self.assertTrue(texts[0].startswith("Яблоко") or texts[0].startswith("Apple"), texts)
         # срок слова при этом не съезжает
         due = self.queue()[0]["due_at"]
         self.assertEqual(due, (self.clock() + timedelta(days=1)).isoformat())

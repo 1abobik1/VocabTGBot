@@ -211,17 +211,9 @@ class Bot:
     async def _next_card(self, username, chat_id):
         """Кнопка «Карточка сейчас»: показывает слово, даже если его срок ещё не подошёл."""
         now = self._now()
-        today = srs.local_date(self.schedule, now) if self.schedule else ""
-        queue = [srs.prepare(x, now) for x in await self.repo.get(queue_key(username), [])]
-        if not queue:
+        if not await self.repo.get(queue_key(username), []):
             await self.send(chat_id, "Очередь пуста — добавь новое слово или нажми «🤖 AI-Генерация».")
             return
-        ready = srs.pick_next(queue, now, today, 0, self._new_quota()) is not None
-        if not ready:
-            word = srs.earliest(queue)
-            due = w.parse_iso(srs.due_at(word))
-            when = self.schedule.local(due).strftime("%d.%m в %H:%M") if self.schedule else srs.due_at(word)
-            await self.send(chat_id, f"На сегодня всё отвечено: по расписанию это слово {when}. Показываю раньше:")
         await self.send_card(username, chat_id, now=now, force=True)
 
     async def send_stats(self, username, chat_id):
