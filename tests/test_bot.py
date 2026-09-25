@@ -281,7 +281,10 @@ class BotTest(unittest.TestCase):
         self.assertEqual([w["en"] for w in self.queue()], ["cat"])
         self.assertIsNone(self.store.json(f"practice:{OWNER.lower()}"))
         answers = [p for m, p in self.tg.calls if m == "answerCallbackQuery"]
-        self.assertEqual(answers[-1]["text"], "📥 Слово сразу в архиве")
+        self.assertEqual(answers[-1]["text"], "📥 В архиве — вот следующее")
+        self.assertTrue(self.tg.last_text().startswith("Кот"))  # следующее слово сразу, без расписания
+        self.press("a:" + self.last_card_word())
+        self.assertIn("Очередь пуста", self.tg.last_text())
         # the archived word shows up in "Повтор архивных слов"
         self.msg(cards.REVIEW_BUTTON)
         self.assertIn("1) apple — яблоко", self.tg.last_text())

@@ -62,6 +62,12 @@ class ParseCardsTest(unittest.TestCase):
         parsed = generator.parse_cards(output, existing=["get by"])
         self.assertEqual([c["en"] for c in parsed], ["delegate"])
 
+    def test_three_examples_are_kept(self):
+        examples = (("I liked it.", "Мне понравилось."), ("I like it.", "Мне нравится."),
+                    ("I'll like it.", "Мне понравится."), ("Extra one.", "Лишний пример."))
+        parsed = generator.parse_cards({"response": {"cards": [card("like", "нравиться", examples=examples)]}})
+        self.assertEqual([e["en"] for e in parsed[0]["examples"]], ["I liked it.", "I like it.", "I'll like it."])
+
     def test_short_abbreviations_are_allowed_in_russian(self):
         parsed = generator.parse_cards({"response": {"cards": [card("bug", "баг в IT", examples=(("It's a bug.", "Это баг, ОК?"),))]}})
         self.assertEqual(len(parsed), 1)
@@ -86,6 +92,8 @@ class ParseCardsTest(unittest.TestCase):
         prompt = generator.build_input("B2", 3, "работа в офисе", ["apple", "cat"])
         system = prompt["messages"][0]["content"]
         self.assertIn("CEFR level B2", system)
+        self.assertIn("exactly 3 short example sentences", system)
+        self.assertIn("the first in a past tense, the second in a present tense, the third in a future form", system)
         self.assertIn("Topic: работа в офисе", system)
         self.assertIn("apple, cat", system)
         self.assertEqual(prompt["messages"][1]["content"], "Generate 3 cards.")

@@ -18,7 +18,8 @@ from .text import clean, has_cyrillic, has_foreign_script, strip_extras
 
 # Сколько предложений разбирать из одного сообщения: ограничивает размер запроса, не число попыток.
 MAX_PER_MESSAGE = 5
-MIN_GOOD = 2
+# Хватает одного верного употребления слова — как «Знаю».
+MIN_GOOD = 1
 MAX_VOICE_SECONDS = 60
 # Бесплатная расшифровка речи в Workers AI; голосовые Telegram (OGG/Opus) принимает как есть.
 WHISPER_MODEL = "@cf/openai/whisper-large-v3-turbo"
@@ -125,27 +126,46 @@ def build_usage_request(word, sentences, level, model=ai.DEFAULT_MODEL):
         f"made their own sentences with the word or phrase '{en}' (Russian: '{ru}'). Show what else is worth "
         "knowing about it. 'tip_ru': 1-2 short sentences in natural Russian, addressing the learner as «ты»: other "
         "common meanings or uses of the word and the typical constructions and collocations with it that the "
-        "learner did not use (write English words and phrases as they are, without quotes). 'examples': exactly 2 short, natural sentences that "
-        "people really say, showing those constructions, each with a natural Russian translation."
+        "learner did not use (write English words and phrases as they are, without quotes). 'past', 'present', "
+        "'future': one short, natural sentence each that people really say with the word — in a past tense, "
+        "a present tense and a future form (will, be going to…) respectively, preferably showing those "
+        "constructions. Each must sound like something a native speaker would really say: if a form is awkward "
+        "with this word, choose a natural context for it rather than forcing it. 'en' is the sentence, "
+        "'ru' its natural Russian translation."
     )
     user = "The learner's sentences:\n" + "\n".join(f"- {s}" for s in sentences)
-    return ai.request(system, user, ai.WordUsage, 400, 0.6, model)
+    return ai.request(system, user, ai.WordUsage, 500, 0.6, model)
+
+
+PAST, PRESENT, FUTURE = "past", "present", "future"
+TENSES = (PAST, PRESENT, FUTURE)
 
 
 def parse_usage(output):
-    """(совет, [{'en', 'ru'}]) или None, если ни совета, ни годных примеров."""
+    """(совет, [{'tense', 'en', 'ru'}] в порядке прошлое → настоящее → будущее) или None,
+    если ответ не по форме или в нём нет ничего годного."""
     usage = ai.parse(ai.WordUsage, output)
     if usage is None:
         return None
     tip = clean(usage.tip_ru)
     if not has_cyrillic(tip) or has_foreign_script(tip):
         tip = ""
-    examples = generator.clean_pairs(usage.examples)
+    examples = []
+    for tense in TENSES:
+        pair = generator.clean_pairs([getattr(usage, tense)], limit=1)
+        if pair:
+            examples.append({"tense": tense, **pair[0]})
     return (tip, examples) if tip or examples else None
 
 
 async def usage(ai_client, word, sentences, level, model=ai.DEFAULT_MODEL):
-    return parse_usage(await ai_client.run(model, build_usage_request(word, sentences, level, model)))
+    """Совет с одной повторной попыткой, если модель ответила не по форме; None — не вышло."""
+    request = build_usage_request(word, sentences, level, model)
+    for _ in range(2):
+        result = parse_usage(await ai_client.run(model, request))
+        if result is not None:
+            return result
+    return None
 
 
 # ---- голосовые ------------------------------------------------------------------------------

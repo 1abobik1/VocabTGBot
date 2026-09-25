@@ -40,9 +40,14 @@ LEVEL_GUIDE = (
     "natural expressions (e.g. 'take for granted', 'on the fence')."
 )
 
+# Примеров к слову: прошедшее, настоящее и будущее время — карточка показывает их по очереди.
+EXAMPLES = 3
 EXAMPLES_RULES = (
-    "exactly 2 short example sentences that people really say in conversation and that contain the word, "
-    "each with a Russian translation of the meaning (not word for word), and English synonyms with Russian "
+    "exactly 3 short example sentences that people really say in conversation and that contain the word: "
+    "the first in a past tense, the second in a present tense, the third in a future form (will, be going to…); "
+    "each must sound natural — if a form is awkward with this word, choose a natural context for it rather than "
+    "forcing it. Each example has a Russian translation of the meaning (not word for word). Also give English "
+    "synonyms with Russian "
     "translations. Synonyms must be real synonyms: same meaning and part of speech, able to replace the word "
     "in the example sentence. Give 1-2 of them; if there is no good synonym, give an empty list. "
     "Russian text must be grammatical, sound natural to a native speaker and contain no English words."
@@ -72,7 +77,7 @@ def build_input(level, count, topic=None, avoid=(), grammar=(), rng=random, mode
         f"{_grammar_hint(level, grammar)} "
         f"Every card must be a different word. Do not use any of these words: {', '.join(avoid) or 'none'}. "
     )
-    return ai.request(system, f"Generate {count} cards.", ai.CardBatch, 250 + 200 * count, 0.8, model)
+    return ai.request(system, f"Generate {count} cards.", ai.CardBatch, 250 + 260 * count, 0.8, model)
 
 
 def build_enrich_input(en, ru, level=None, grammar=(), model=DEFAULT_MODEL):
@@ -81,7 +86,7 @@ def build_enrich_input(en, ru, level=None, grammar=(), model=DEFAULT_MODEL):
         f"Russian translation write {EXAMPLES_RULES}"
         f"{_grammar_hint(level, grammar) if level else ''} "
     )
-    return ai.request(system, f"Word: {en}\nRussian translation: {ru}", ai.Enrichment, 500, 0.7, model)
+    return ai.request(system, f"Word: {en}\nRussian translation: {ru}", ai.Enrichment, 650, 0.7, model)
 
 
 # ---- проверка ответа модели ---------------------------------------------------------------
@@ -136,7 +141,7 @@ def parse_cards(output, existing=(), limit=MAX_CARDS):
         if w.compact(en) in seen:
             print(f"generator: dropped duplicate {en!r}")
             continue
-        examples = clean_pairs(raw.examples)
+        examples = clean_pairs(raw.examples, limit=EXAMPLES)
         if not examples:
             print(f"generator: dropped card without valid examples {raw}"[:240])
             continue  # карточка без примера не стоит того, чтобы её учить
@@ -152,7 +157,7 @@ def parse_enrichment(output):
     enrichment = ai.parse(ai.Enrichment, output)
     if enrichment is None:
         return [], []
-    return clean_pairs(enrichment.examples), clean_pairs(enrichment.synonyms)
+    return clean_pairs(enrichment.examples, limit=EXAMPLES), clean_pairs(enrichment.synonyms)
 
 
 async def generate(ai_client, level, count, topic=None, existing=(), model=DEFAULT_MODEL, grammar=()):

@@ -23,8 +23,9 @@ def review(*verdicts):
 
 USAGE = {"response": {
     "tip_ru": "Ещё говорят «chill out» — расслабиться, и «chill» — спокойный.",
-    "examples": [{"en": "Just chill out, it's fine.", "ru": "Расслабься, всё нормально."},
-                 {"en": "He's a really chill guy.", "ru": "Он очень спокойный парень."}]}}
+    "past": {"en": "We chilled out after the exam.", "ru": "Мы расслабились после экзамена."},
+    "present": {"en": "Just chill out, it's fine.", "ru": "Расслабься, всё нормально."},
+    "future": {"en": "We'll chill at the beach tomorrow.", "ru": "Завтра отдохнём на пляже."}}}
 
 
 class ComposeLogicTest(unittest.TestCase):
@@ -54,7 +55,8 @@ class ComposeLogicTest(unittest.TestCase):
         self.assertEqual(items[0]["comment"], "")
         self.assertEqual(compose.good_count(items), 2)
         self.assertTrue(compose.passed(items))
-        self.assertFalse(compose.passed(compose.parse(review("correct", "wrong"), ["a b", "c d"])))
+        self.assertTrue(compose.passed(compose.parse(review("wrong", "grammar"), ["a b", "c d"])))  # хватает одного
+        self.assertFalse(compose.passed(compose.parse(review("wrong", "wrong"), ["a b", "c d"])))
         self.assertIsNone(compose.parse(review("correct"), ["a b", "c d"]))           # разобрано не всё
         self.assertIsNone(compose.parse(review("correct", "maybe"), ["a b", "c d"]))  # непонятный вердикт
         bad = review("correct")
@@ -64,12 +66,17 @@ class ComposeLogicTest(unittest.TestCase):
     def test_usage(self):
         prompt = compose.build_usage_request(WORD, ["I chill at home."], "B1")
         self.assertIn("typical constructions and collocations", prompt["messages"][0]["content"])
-        self.assertIn("exactly 2 short, natural sentences", prompt["messages"][0]["content"])
         self.assertEqual(prompt["messages"][1]["content"], "The learner's sentences:\n- I chill at home.")
+        self.assertIn("'past', 'present', 'future'", prompt["messages"][0]["content"])
         tip, examples = compose.parse_usage(USAGE)
         self.assertIn("chill out", tip)
-        self.assertEqual([e["en"] for e in examples], ["Just chill out, it's fine.", "He's a really chill guy."])
-        broken = {"response": {"tip_ru": "Use chill out.", "examples": [{"en": "Chill.", "ru": "Chill."}]}}
+        self.assertEqual([(e["tense"], e["en"]) for e in examples], [
+            ("past", "We chilled out after the exam."), ("present", "Just chill out, it's fine."),
+            ("future", "We'll chill at the beach tomorrow.")])
+        broken = {"response": dict(USAGE["response"], present={"en": "Chill.", "ru": "Chill."})}
+        self.assertEqual([e["tense"] for e in compose.parse_usage(broken)[1]], ["past", "future"])  # плохой пример выпал
+        broken = {"response": {"tip_ru": "Use chill out.", "past": {"en": "a", "ru": "a"}, "present": {"en": "b", "ru": "b"},
+                               "future": {"en": "c", "ru": "c"}}}
         self.assertIsNone(compose.parse_usage(broken))                                # ничего годного
 
     def test_punctuation_only_fix_is_not_shown(self):
@@ -81,10 +88,10 @@ class ComposeLogicTest(unittest.TestCase):
 
     def test_quotes_around_english_are_dropped(self):
         tip = ("Помни: после фразы идёт -ing. В письме: 'I look forward to your reply' (Жду ответа), "
-               "а ещё ‘chill out’ и \"reliable\". Don't — не трогаем.")
+               "а ещё ‘chill out’ и \"reliable\", и 'it's easy to take something for granted'. Don't — не трогаем.")
         text = cards.render_compose_result(WORD, [], (tip, []))
         self.assertIn("В письме: <b>I look forward to your reply</b> (Жду ответа), а ещё <b>chill out</b> "
-                      "и <b>reliable</b>. Don't — не трогаем.", text)
+                      "и <b>reliable</b>, и <b>it's easy to take something for granted</b>. Don't — не трогаем.", text)
 
     def test_transcribe_request(self):
         payload = compose.transcribe_request(b"OggS")
@@ -145,11 +152,11 @@ class ComposeFlowTest(unittest.TestCase):
     def test_sentences_one_by_one_then_done(self):
         self.start()
         prompt_message = len(self.tg.calls)
-        self.ai.responses.append(review("grammar"))
-        self.msg("She chilling with friends.")
+        self.ai.responses.append(review("wrong"))
+        self.msg("The soup is chill.")
         text = self.tg.last_text()
-        self.assertIn("1. 🟡 She chilling with friends.\n→ <b>Fixed sentence 0.</b>\n<i>Пропущен артикль.</i>", text)
-        self.assertIn("Верно: 1 из 1. Нужно верных: 2. Пришли ещё предложение текстом или голосом.", text)
+        self.assertIn("1. ❌ The soup is chill.\n→ <b>Fixed sentence 0.</b>\n<i>Пропущен артикль.</i>", text)
+        self.assertIn("Верно: 0 из 1. Пока слово не употреблено верно — пришли ещё предложение", text)
         self.assertEqual(self.buttons(), ["sd", "sc"])
         self.assertIn("sent_at", self.word())                                        # карточка ещё ждёт ответа
         dropped = [p["message_id"] for m, p in self.tg.calls if m == "editMessageReplyMarkup"]
@@ -160,7 +167,7 @@ class ComposeFlowTest(unittest.TestCase):
             self.msg(voice={"file_id": f"F{n}", "duration": 4})
         text = self.tg.last_text()
         self.assertIn("🎙 Услышал: <i>We chill on day 4.</i>\n\n6. ✅ We chill on day 4.", text)
-        self.assertIn("Верно: 6 из 6. Уже засчитывается", text)
+        self.assertIn("Верно: 5 из 6. Уже засчитывается", text)
         self.assertEqual(self.word()["stage"], 0)                                  # пока не нажал «Готово»
 
         self.ai.responses.append(USAGE)
@@ -169,9 +176,11 @@ class ComposeFlowTest(unittest.TestCase):
         self.assertIn("typical constructions", usage_prompt[0]["content"])
         self.assertIn("- Fixed sentence 0.", usage_prompt[1]["content"])            # исправленные предложения
         result = self.tg.sent()[-2]["text"]
-        self.assertIn("🏁 <b>Итог</b> · chill\n\nВерно 6 из 6 — засчитано как «Знаю».", result)
+        self.assertIn("🏁 <b>Итог</b> · chill\n\nВерно 5 из 6 — засчитано как «Знаю».", result)
         self.assertIn("💡 Ещё говорят <b>chill out</b> — расслабиться, и <b>chill</b> — спокойный.", result)
-        self.assertIn("<b>Ещё так говорят:</b>\n• Just chill out, it's fine.\n  <i>Расслабься, всё нормально.</i>", result)
+        self.assertIn("<b>Ещё так говорят:</b>\n• прошлое: We chilled out after the exam.\n  <i>Мы расслабились после "
+                      "экзамена.</i>\n• настоящее: Just chill out, it's fine.", result)
+        self.assertIn("• будущее: We'll chill at the beach tomorrow.", result)
         self.assertEqual(self.word()["stage"], 1)                                  # как «Знаю» на новом слове
         self.assertTrue(self.tg.last_text().startswith("Chill"))
         self.assertEqual(self.store.json(f"compose:{KEY}"), {})
@@ -180,17 +189,26 @@ class ComposeFlowTest(unittest.TestCase):
 
     def test_long_message_is_cut_and_weak_result_is_unknown(self):
         self.start()
-        self.ai.responses.append(review("correct", "wrong", "wrong", "wrong", "wrong"))
+        self.ai.responses.append(review("wrong", "wrong", "wrong", "wrong", "wrong"))
         self.msg("I chill. You chill. The soup is chill. It's chill outside. We chill a lot. They chill too.")
         self.assertEqual(self.ai.calls[-1][1]["messages"][1]["content"].count("\n"), 4)  # 5 из 6
         self.assertIn("Ещё 1 не разобрал: в одном сообщении — до 5.", self.tg.last_text())
         self.ai.responses.append(RuntimeError("down"))                              # совет не пришёл — итог всё равно
         self.press("sd")
-        self.assertIn("Верно 1 из 5 — меньше 2, считаю как «Не знаю»", self.tg.last_text())
+        self.assertIn("Верно 0 из 5 — считаю как «Не знаю»", self.tg.last_text())
         self.assertNotIn("💡", self.tg.last_text())
         word = self.word()
         self.assertEqual((word["stage"], word["lapses_in_a_row"]), (0, 1))
         self.assertNotIn("sent_at", word)
+
+    def test_one_good_sentence_is_enough(self):
+        self.start()
+        self.ai.responses += [review("correct"), USAGE]
+        self.msg("I chill at home on Sundays.")
+        self.assertIn("Уже засчитывается", self.tg.last_text())
+        self.press("sd")
+        self.assertIn("Верно 1 из 1 — засчитано как «Знаю».", self.tg.sent()[-2]["text"])
+        self.assertEqual(self.word()["stage"], 1)
 
     def test_done_before_any_sentence(self):
         self.start()

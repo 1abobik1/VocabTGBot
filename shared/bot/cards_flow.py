@@ -186,7 +186,7 @@ class CardsFlow:
         w.FLIPPED: "👍 Теперь в обратную сторону",
         w.REVIEWED: "✅ Отлично, вернусь к слову позже",
         w.TO_PRACTICE: "🎯 Интервалы пройдены — слово ждёт практики",
-        w.ARCHIVED: "📥 Слово сразу в архиве",
+        w.ARCHIVED: "📥 В архиве — вот следующее",
         w.REQUEUED: "🔁 Слово вернётся сегодня же",
         w.NOT_FOUND: "Эта карточка уже неактуальна",
     }
@@ -236,7 +236,10 @@ class CardsFlow:
             # Вторая сторона нового слова идёт сразу, в этом же слоте.
             await self._deliver(username, chat_id, [answer["word"]], answer["queue"], answer["now"], answer["today"])
         elif answer["result"] != w.NOT_FOUND:
-            await self._catch_up(username, chat_id)
+            sent = await self._catch_up(username, chat_id)
+            if answer["result"] == w.ARCHIVED and not sent:
+                # «В архив» — слово и так знаю: сразу следующее из очереди, не дожидаясь расписания.
+                await self._next_card(username, chat_id)
 
     async def _cron_cards(self, now):
         """Слот расписания — карточки; за 20 минут до слота — слово от ИИ, если очередь пуста."""

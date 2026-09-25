@@ -44,9 +44,9 @@ flowchart LR
 
 ## Features
 
-- **Scheduled cards**: 14 slots a day, 6 of them for new words; «Знаю» (Know), «Не знаю» (Don't know), «📥 В архив» (Archive) buttons. Intervals: a day → three days → practice; «Не знаю» postpones by 30 minutes, 2 hours, tomorrow.
-- **🗣 Your own sentences instead of «Знаю»** — typed or as **voice messages**, one at a time and with no limit. The AI reviews each one right away and shows how to say it more naturally; on «🏁 Готово» (Done) it explains other ways the word is used, with two examples. Correct in two — the word counts.
-- **AI cards**: `/gen 5 travel`, or add a word yourself and the AI writes two examples at your level using the grammar you have gaps in. The same word is never offered twice.
+- **Scheduled cards**: 14 slots a day, 6 of them for new words; «Знаю» (Know), «Не знаю» (Don't know), «📥 В архив» (Archive, sends the next word right away) buttons. Intervals: a day → three days → practice; «Не знаю» postpones by 30 minutes, 2 hours, tomorrow.
+- **🗣 Your own sentences instead of «Знаю»** — typed or as **voice messages**, one at a time and with no limit. The AI reviews each one right away and shows how to say it more naturally; on «🏁 Готово» (Done) it explains other ways the word is used, with examples in the past, present and future. One correct sentence is enough for the word to count.
+- **AI cards**: `/gen 5 travel`, or add a word yourself and the AI writes three examples (past, present, future) at your level using the grammar you have gaps in. The same word is never offered twice.
 - **Practice at 22:30**: type learned words in both directions; a typo is "almost", a mistake means learning it again.
 - **Exercises at 20:00**: A1–B2 grammar from the British Council syllabus (67 rules) plus your own words. The code picks the rules (weak spots, new, review); the AI only writes sentences.
 - **Weekly report**: words learned, mistakes, progress by level A1–B2 and advice from the AI.

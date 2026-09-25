@@ -55,8 +55,8 @@ HELP_TEXT = (
     "<b>Кнопки</b>\n"
     f"{COMPOSE_BUTTON} под карточкой — вместо «{KNOWN_BUTTON}»: свои предложения со словом, текстом или "
     "голосовыми, по одному и сколько хочешь. ИИ сразу разбирает каждое и показывает, как сказать "
-    f"естественнее; по «{COMPOSE_DONE_BUTTON}» — советы и частые конструкции со словом. Верно в двух — "
-    f"засчитается как «{KNOWN_BUTTON}».\n\n"
+    f"естественнее; по «{COMPOSE_DONE_BUTTON}» — советы и частые конструкции со словом. Слово "
+    f"употреблено верно хотя бы раз — засчитается как «{KNOWN_BUTTON}».\n\n"
     f"{NEXT_BUTTON} — следующая карточка из очереди прямо сейчас, не дожидаясь расписания. "
     "Если на прошлую карточку ещё нет ответа, пришлёт её повторно.\n\n"
     f"{REVIEW_BUTTON} — список выученных слов, новые сверху. Пришли номера забытых "
@@ -225,8 +225,8 @@ def render_compose_prompt(word):
     return (
         f"🗣 Составь предложение со словом {target}\n\n"
         "Напиши его или запиши голосовое — можно по одному предложению и сколько хочешь, каждое разберу сразу. "
-        f"«{COMPOSE_DONE_BUTTON}» — итог с советами, как ещё употребляют слово. Слово верно хотя бы "
-        f"в {compose.MIN_GOOD} предложениях — засчитаю как «{KNOWN_BUTTON}», иначе — как «{UNKNOWN_BUTTON}»."
+        f"«{COMPOSE_DONE_BUTTON}» — итог с советами, как ещё употребляют слово. Слово употреблено верно — "
+        f"засчитаю как «{KNOWN_BUTTON}», иначе — как «{UNKNOWN_BUTTON}»."
     )
 
 
@@ -263,13 +263,14 @@ def render_compose_progress(items):
     if compose.passed(items):
         text += f"Уже засчитывается — «{COMPOSE_DONE_BUTTON}» или ещё предложение."
     else:
-        text += f"Нужно верных: {compose.MIN_GOOD}. Пришли ещё предложение текстом или голосом."
+        text += "Пока слово не употреблено верно — пришли ещё предложение текстом или голосом."
     return text
 
 
 # Английская фраза в кавычках внутри русского текста: 'look forward to', «chill out», "reliable".
-# Апостроф внутри слова (don't) кавычкой не считается: перед открывающей не должно быть буквы.
-_QUOTED_ENGLISH = re.compile(r"(?<![A-Za-z])['‘\"«]([A-Za-z][^'‘’\"«»\n]*?)['’\"»](?![A-Za-z])")
+# Апостроф внутри слова (don't, it's) кавычкой не считается: перед открывающей не должно быть буквы,
+# после закрывающей — буквы, а апостроф перед строчной буквой — часть фразы.
+_QUOTED_ENGLISH = re.compile(r"(?<![A-Za-z])['‘\"«]([A-Za-z](?:[^'‘’\"«»\n]|['’](?=[a-z]))*?)['’\"»](?![A-Za-z])")
 
 
 def _highlight_english(text):
@@ -281,6 +282,9 @@ def _highlight_english(text):
     return "".join(parts) + escape(text[last:])
 
 
+_TENSE_NAMES = {compose.PAST: "прошлое", compose.PRESENT: "настоящее", compose.FUTURE: "будущее"}
+
+
 def render_compose_result(word, items, usage=None):
     """Итог: засчитано ли слово и, если ИИ ответил, как ещё его употребляют."""
     good, total = compose.good_count(items), len(items)
@@ -288,15 +292,14 @@ def render_compose_result(word, items, usage=None):
     if compose.passed(items):
         lines.append(f"Верно {good} из {total} — засчитано как «{KNOWN_BUTTON}».")
     else:
-        lines.append(f"Верно {good} из {total} — меньше {compose.MIN_GOOD}, считаю как «{UNKNOWN_BUTTON}»: "
-                     "слово вернётся позже.")
+        lines.append(f"Верно {good} из {total} — считаю как «{UNKNOWN_BUTTON}»: слово вернётся позже.")
     if usage:
         tip, examples = usage
         if tip:
             lines += ["", f"💡 {_highlight_english(tip)}"]
         if examples:
             lines += ["", "<b>Ещё так говорят:</b>"]
-            lines += [f"• {escape(e['en'])}\n  <i>{escape(e['ru'])}</i>" for e in examples]
+            lines += [f"• {_TENSE_NAMES[e['tense']]}: {escape(e['en'])}\n  <i>{escape(e['ru'])}</i>" for e in examples]
     return "\n".join(lines)
 
 
