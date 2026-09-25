@@ -3,11 +3,13 @@
 All business logic lives in `shared/` (copied into src/ by the [build] step in wrangler.toml).
 """
 
+import asyncio
 import json
 import traceback
 from datetime import datetime, timezone
 
-from js import Object
+from js import Object, Promise
+from js import fetch as js_fetch
 from pyodide.ffi import to_js
 from workers import Response, WorkerEntrypoint, fetch
 
@@ -31,6 +33,14 @@ class KVStore:
 class Telegram:
     def __init__(self, token, api_base=None):
         self.base = f"{api_base or 'https://api.telegram.org'}/bot{token}/"
+        self.file_base = f"{api_base or 'https://api.telegram.org'}/file/bot{token}/"
+
+    async def download(self, file_path):
+        """Файл из Telegram (например, голосовое) как bytes."""
+        response = await js_fetch(self.file_base + file_path)
+        if not response.ok:
+            raise RuntimeError(f"telegram file download failed: {response.status}")
+        return bytes((await response.arrayBuffer()).to_py())
 
     async def call(self, method, payload):
         response = await fetch(
@@ -89,7 +99,18 @@ class Default(WorkerEntrypoint):
             schedule=Schedule.from_env(env_get),
             ai=self._ai(),
             ai_model=env_get("AI_MODEL"),
+            defer=self._defer,
         )
+
+    def _defer(self, coro):
+        """Фоновая работа после ответа Telegram (например, следующая пачка упражнений)."""
+        async def guarded():
+            try:
+                await coro
+            except Exception:
+                traceback.print_exc()
+
+        self.ctx.waitUntil(Promise.resolve(asyncio.ensure_future(guarded())))
 
     async def scheduled(self, controller, *args):
         """Cron trigger (every minute): sends a card when the minute is a schedule slot."""

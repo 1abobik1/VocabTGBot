@@ -9,6 +9,9 @@ import re
 from datetime import timedelta
 
 from . import srs
+from .text import (
+    strip_extras,  # noqa: F401 — используется и снаружи как pr.strip_extras
+)
 
 OK = "ok"
 NEAR = "near"
@@ -18,22 +21,14 @@ RU_EN = "ru_en"  # Russian shown, English typed
 EN_RU = "en_ru"  # English shown, Russian typed
 DIRECTIONS = (RU_EN, EN_RU)
 
-
-
 _NUMBERING = re.compile(r"^\s*\d+\s*[).:\-–—]?\s+|^\s*\d+\s*[).:]\s*")
-_PARENS = re.compile(r"\([^)]*\)")
-# Транскрипция в карточке ("towel [ˈtaʊəl]") на проверку не влияет.
-_BRACKETS = re.compile(r"\[[^\]]*\]")
+
+# Транскрипция и пометки в скобках на проверку не влияют (см. text.strip_extras).
 # Несколько вариантов перевода: "couch / sofa", "догнать, наверстать", "женат или замужем".
 _VARIANT_SPLIT = re.compile(r"[,;/]|\bили\b")
 _NON_WORD = re.compile(r"[^\w\s]", re.UNICODE)
 _EN_PREFIX = re.compile(r"^(to|a|an|the)\s+")
 _SKIP_ANSWERS = {"", "-", "—", "?", "...", "…"}
-
-
-def strip_extras(text):
-    """Убирает транскрипцию и пояснения в скобках: "towel [ˈtaʊəl] (для рук)" -> "towel"."""
-    return " ".join(_PARENS.sub(" ", _BRACKETS.sub(" ", text or "")).split())
 
 
 def normalize(text):

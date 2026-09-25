@@ -3,12 +3,16 @@
 import random
 from html import escape as _html_escape
 
+from . import compose
+from . import curriculum as cur
 from . import exercises as ex
+from .practice import NEAR, OK, WRONG
 from .words import current_example
 
 KNOWN_BUTTON = "Знаю"
 UNKNOWN_BUTTON = "Не знаю"
 ARCHIVE_BUTTON = "📥 В архив"
+COMPOSE_BUTTON = "🗣 Составить предложения"
 NEXT_BUTTON = "🃏 Карточка сейчас"
 REVIEW_BUTTON = "🔁 Повтор архивных слов"
 GENERATE_BUTTON = "🤖 AI-Генерация"
@@ -47,6 +51,9 @@ HELP_TEXT = (
     "Если примеров и синонимов нет, их придумает ИИ и покажет карточку на проверку: "
     "«В очередь», «Исправить», «Без примеров» или «Удалить».\n\n"
     "<b>Кнопки</b>\n"
+    f"{COMPOSE_BUTTON} под карточкой — вместо «{KNOWN_BUTTON}»: напиши 2–3 своих предложения со словом "
+    "или запиши голосовое. ИИ разберёт каждое и покажет, как сказать естественнее; слово правильно "
+    f"употреблено хотя бы в двух — засчитается как «{KNOWN_BUTTON}».\n\n"
     f"{NEXT_BUTTON} — следующая карточка из очереди прямо сейчас, не дожидаясь расписания. "
     "Если на прошлую карточку ещё нет ответа, пришлёт её повторно.\n\n"
     f"{REVIEW_BUTTON} — список выученных слов, новые сверху. Пришли номера забытых "
@@ -55,18 +62,18 @@ HELP_TEXT = (
     "С темой — командой <code>/gen 5 путешествия</code>. Карточки приходят по одной на проверку: "
     "«В очередь», «Исправить» или «Удалить». Если очередь пуста, ИИ сам предложит слово "
     "за 20 минут до карточки по расписанию.\n\n"
-    f"{EXERCISE_BUTTON} — 5 заданий с пропуском: предлоги, времена, слова из твоего словаря, артикли, "
-    "формы слова, фразовые глаголы. Приходят сами в 20:00 и ждут, пока не пройдёшь; карточкам не мешают. "
-    f"Бот запоминает ошибки и чаще даёт задания на слабые правила. «{EXERCISE_DISPUTE}» — если задание "
-    "показалось спорным: оно не засчитается.\n\n"
+    f"{EXERCISE_BUTTON} — 5 заданий с пропуском по грамматике A1–B2 (программа British Council) и на слова "
+    "из твоего словаря. Правила подбирает бот: примерно половина — где ты ошибаешься, треть — новые "
+    "по программе, остальное — повтор освоенного. Приходят сами в 20:00 и ждут, пока не пройдёшь; "
+    f"карточкам не мешают. «{EXERCISE_DISPUTE}» — если задание показалось спорным: оно не засчитается.\n\n"
     f"{PRACTICE_BUTTON} — написать слова, прошедшие интервальные повторы: сначала по-английски, "
     "потом по-русски, потом по желанию предложения. Верно — в архив, опечатка — завтра ещё одна "
     "карточка, ошибка — слово учится заново. Сама запускается каждый вечер в 22:30, по 7 слов.\n\n"
     f"<b>{SETTINGS_BUTTON}</b> — редкие действия:\n"
-    f"{LEVEL_BUTTON} — общий уровень A1–C1: по нему ИИ подбирает слова, примеры и упражнения.\n"
-    f"{TOPICS_BUTTON} — какие типы упражнений давать; по умолчанию все, ИИ подбирает по уровню.\n"
-    f"{STATS_BUTTON} — сколько слов выучено за неделю, что в очереди, ошибки на практике и слабые места "
-    "в упражнениях. Приходит сама по воскресеньям в 21:00 вместе с разбором от ИИ.\n"
+    f"{LEVEL_BUTTON} — общий уровень A1–B2: по нему подбираются слова, примеры и упражнения. Примеры к новым словам строятся на грамматике, где у тебя пробелы.\n"
+    f"{TOPICS_BUTTON} — какие разделы грамматики давать; по умолчанию все.\n"
+    f"{STATS_BUTTON} — сколько слов выучено за неделю, что в очереди, ошибки на практике, слабые места "
+    "в упражнениях и прогресс по уровням A1–B2. Приходит сама по воскресеньям в 21:00 вместе с разбором от ИИ.\n"
     f"{REVIEW_BUTTON} и {HELP_BUTTON} — тоже здесь. {BACK_BUTTON} — в главное меню.\n\n"
     "<b>Расписание</b>: 14 слотов в день с 10:00 до 23:00, из них 6 — под новые слова. "
     "«Не знаю» не ставит слово следующим: оно вернётся через 30 минут, потом через 2 часа, потом завтра, "
@@ -145,11 +152,8 @@ def inbox_keyboard(word):
     return {"inline_keyboard": rows}
 
 
-LEVELS = ("A1", "A2", "B1", "B2", "C1")
-
-
 def _level_row(current, prefix):
-    return [{"text": f"• {lv} •" if lv == current else lv, "callback_data": f"{prefix}:{lv}"} for lv in LEVELS]
+    return [{"text": f"• {lv} •" if lv == current else lv, "callback_data": f"{prefix}:{lv}"} for lv in cur.LEVELS]
 
 
 def render_generate_menu(level, own=False):
@@ -159,7 +163,7 @@ def render_generate_menu(level, own=False):
         f"{GENERATE_BUTTON}\n\n"
         f"Уровень: <b>{level}</b> ({where}).\n"
         "Сколько карточек сгенерировать?\n\n"
-        "С темой своими словами: <code>/gen 5 путешествия</code> или <code>/gen 3 C1 работа в офисе</code>"
+        "С темой своими словами: <code>/gen 5 путешествия</code> или <code>/gen 3 B2 работа в офисе</code>"
     )
 
 
@@ -200,9 +204,55 @@ def card_keyboard(word):
                 {"text": KNOWN_BUTTON, "callback_data": f"k:{word['id']}:{stage}"},
                 {"text": UNKNOWN_BUTTON, "callback_data": f"n:{word['id']}:{stage}"},
                 {"text": ARCHIVE_BUTTON, "callback_data": f"a:{word['id']}:{stage}"},
-            ]
+            ],
+            [{"text": COMPOSE_BUTTON, "callback_data": f"sx:{word['id']}:{stage}"}],
         ]
     }
+
+
+# ---- свои предложения со словом ----------------------------------------------------------
+
+
+def render_compose_prompt(word):
+    """Как на карточке: на первой стороне английское слово нужно вспомнить самому."""
+    if word.get("stage", 0) == 0:
+        target = f"«{escape(_capitalize(word['ru']))}» — {_spoiler(word['en'])}"
+    else:
+        target = f"<b>{escape(word['en'])}</b> — {_spoiler(word['ru'])}"
+    return (
+        f"🗣 Составь 2–3 предложения со словом {target}\n\n"
+        f"Напиши их одним сообщением или запиши голосовое (до {compose.MAX_VOICE_SECONDS} секунд). "
+        f"Слово правильно употреблено хотя бы в {compose.MIN_GOOD} — засчитаю как «{KNOWN_BUTTON}», "
+        f"иначе — как «{UNKNOWN_BUTTON}»."
+    )
+
+
+def compose_keyboard():
+    return {"inline_keyboard": [[{"text": CANCEL_BUTTON, "callback_data": "sc"}]]}
+
+
+_COMPOSE_MARKS = {compose.CORRECT: "✅", compose.GRAMMAR: "🟡", compose.WRONG: "❌"}
+
+
+def render_compose_review(word, items, tip, ok, transcript=None):
+    lines = [f"🗣 <b>Разбор</b> · {escape(word['en'])}"]
+    if transcript:
+        lines += ["", f"🎙 Услышал: <i>{escape(transcript)}</i>"]
+    lines.append("")
+    for number, item in enumerate(items, start=1):
+        line = f"{number}. {_COMPOSE_MARKS[item['verdict']]} {escape(item['sentence'])}"
+        if compose.changed(item):
+            line += f"\n→ <b>{escape(item['corrected'])}</b>"
+        if item["comment"]:
+            line += f"\n<i>{escape(item['comment'])}</i>"
+        lines.append(line)
+    if tip:
+        lines += ["", f"💡 {escape(tip)}"]
+    lines.append("")
+    lines.append(f"Засчитано как «{KNOWN_BUTTON}»." if ok else
+                 f"Слово употреблено верно меньше чем в {compose.MIN_GOOD} предложениях — "
+                 f"считаю как «{UNKNOWN_BUTTON}», слово вернётся позже.")
+    return "\n".join(lines)
 
 
 def main_keyboard():
@@ -272,7 +322,7 @@ def render_stats(stats, queue_stats, practice_size=0, new_today=0, new_quota=0):
 # ---- Saturday practice -------------------------------------------------------
 
 PRACTICE_SKIP_BUTTON = "Пропустить"
-_VERDICT_ICONS = {"ok": "✅", "near": "🟡", "wrong": "❌"}
+_VERDICT_ICONS = {OK: "✅", NEAR: "🟡", WRONG: "❌"}
 
 
 def render_practice_round(words, direction):
@@ -310,7 +360,7 @@ def render_practice_feedback(graded):
     lines = []
     for i, (_, answer, verdict, expected, extras) in enumerate(graded, start=1):
         icon = _VERDICT_ICONS[verdict]
-        if verdict == "ok":
+        if verdict == OK:
             line = f"{i}) {icon} {escape(expected)}"
             if extras:
                 line += f"\n    можно и так: {escape(', '.join(extras))}"
@@ -323,12 +373,13 @@ def render_practice_feedback(graded):
 
 def render_practice_summary(outcome, cheer):
     lines = ["🏁 <b>Практика завершена</b>"]
-    if outcome["ok"]:
-        lines += ["", f"{cheer}", "В архив: " + ", ".join(escape(w["en"]) for w in outcome["ok"])]
-    if outcome["near"]:
-        lines += ["", "🟡 Почти (опечатка) — вторым в очереди: " + ", ".join(escape(w["en"]) for w in outcome["near"])]
-    if outcome["wrong"]:
-        lines += ["", "🔁 Учим заново с RU→EN — третьим в очереди: " + ", ".join(escape(w["en"]) for w in outcome["wrong"])]
+    if outcome[OK]:
+        lines += ["", f"{cheer}", "В архив: " + ", ".join(escape(w["en"]) for w in outcome[OK])]
+    if outcome[NEAR]:
+        lines += ["", "🟡 Почти (опечатка) — завтра ещё одна карточка EN→RU: "
+                  + ", ".join(escape(w["en"]) for w in outcome[NEAR])]
+    if outcome[WRONG]:
+        lines += ["", "🔁 Учим заново с RU→EN, начиная с завтра: " + ", ".join(escape(w["en"]) for w in outcome[WRONG])]
     return "\n".join(lines)
 
 
@@ -344,7 +395,7 @@ def render_practice_stats(stats, top=5):
     lines = ["", "", f"🧠 <b>Практика за неделю</b> — слов: {stats['sessions_words']}"]
     for direction, label in names.items():
         c = stats["counts"][direction]
-        lines.append(f"{label}: ✅ {c['ok']} · 🟡 {c['near']} · ❌ {c['wrong']}")
+        lines.append(f"{label}: ✅ {c[OK]} · 🟡 {c[NEAR]} · ❌ {c[WRONG]}")
     if stats["worst"]:
         items = ", ".join(f"{escape(en)} ({n})" for en, n in stats["worst"][:top])
         lines.append(f"Чаще всего ошибки: {items}")
@@ -354,17 +405,17 @@ def render_practice_stats(stats, top=5):
 # ---- упражнения ----------------------------------------------------------------
 
 def render_exercise(exercise, index, total):
-    name, buttons = ex.TYPES[exercise["type"]]
-    hint = "Выбери ответ кнопкой." if buttons else "Напиши ответ сообщением."
+    hint = "Выбери ответ кнопкой." if ex.uses_buttons(exercise) else "Напиши ответ сообщением."
+    topic = cur.rule_name(exercise["rule"])
     return (
-        f"✍️ <b>Упражнение {index + 1}/{total}</b> · {name}\n\n"
+        f"✍️ <b>Упражнение {index + 1}/{total}</b> · {escape(topic)}\n\n"
         f"{escape(exercise['sentence'])}\n\n<i>{hint}</i>"
     )
 
 
 def exercise_keyboard(exercise, index):
     rows = []
-    if ex.TYPES[exercise["type"]][1]:
+    if ex.uses_buttons(exercise):
         rows.append([{"text": o, "callback_data": f"xo:{index}:{k}"} for k, o in enumerate(exercise["options"])])
     rows.append([
         {"text": EXERCISE_DONT_KNOW, "callback_data": f"xn:{index}"},
@@ -375,41 +426,45 @@ def exercise_keyboard(exercise, index):
 
 def render_exercise_feedback(exercise, given, verdict):
     answers = " / ".join([exercise["answer"]] + exercise.get("accepted", []))
-    if verdict == "ok":
+    if verdict == OK:
         head = f"✅ Верно: <b>{escape(exercise['answer'])}</b>"
-    elif verdict == "near":
+    elif verdict == NEAR:
         head = f"🟡 Почти (опечатка): <b>{escape(answers)}</b>"
     elif given:
         head = f"❌ Правильно: <b>{escape(answers)}</b> (у тебя: {escape(given)})"
     else:
         head = f"❌ Правильно: <b>{escape(answers)}</b>"
-    filled = escape(exercise["sentence"]).replace(ex.GAP, f"<b>{escape(exercise['answer'])}</b>", 1)
-    return f"{head}\n{filled}\n<i>{escape(exercise['explanation'])}</i>"
+    before, answer, after = ex.filled_sentence(exercise)
+    lines = [head, "", f"{escape(before)}<b>{escape(answer)}</b>{escape(after)}"]
+    if exercise.get("translation"):
+        lines.append(escape(exercise["translation"]))
+    lines += ["", f"<i>{escape(exercise['explanation'])}</i>"]
+    return "\n".join(lines)
 
 
 def render_exercise_summary(results, weak):
-    ok = sum(1 for r in results if r["verdict"] == "ok")
-    counted = [r for r in results if r["verdict"] != "disputed"]
+    ok = sum(1 for r in results if r["verdict"] == OK)
+    counted = [r for r in results if r["verdict"] != ex.DISPUTED]
     lines = [f"🏁 <b>Упражнения на сегодня готовы</b>: ✅ {ok} из {len(counted)}"]
     if weak:
-        lines.append("Подтянуть: " + ", ".join(ex.rule_name(s["rule"]) for s in weak))
+        lines.append("Подтянуть: " + ", ".join(cur.rule_name(s["rule"]) for s in weak))
     return "\n".join(lines)
 
 
 def render_topics_menu(chosen):
-    status = "ИИ подбирает по уровню, все темы" if not chosen else "выбраны вручную"
+    status = "все темы программы по твоему уровню" if not chosen else "выбраны вручную"
     return (
         f"{TOPICS_BUTTON}\n\nСейчас: <b>{status}</b>.\n"
         "Нажимай на тему, чтобы включить или выключить её. "
-        "«Все по уровню» — вернуть выбор ИИ."
+        "«Все по уровню» — снова все темы."
     )
 
 
 def topics_keyboard(chosen):
     rows = []
-    for kind, (name, _) in ex.TYPES.items():
-        mark = "✅" if (not chosen or kind in chosen) else "▫️"
-        rows.append([{"text": f"{mark} {name}", "callback_data": f"xt:{kind}"}])
+    for group, name in cur.GROUPS.items():
+        mark = "✅" if (not chosen or group in chosen) else "▫️"
+        rows.append([{"text": f"{mark} {name}", "callback_data": f"xt:{group}"}])
     rows.append([{"text": "🤖 Все по уровню", "callback_data": "xt:auto"}])
     return {"inline_keyboard": rows}
 
@@ -420,10 +475,42 @@ def render_exercise_stats(stats, weak, advice=None):
         lines.append("✍️ <b>Упражнения за неделю</b>: пока не было.")
     else:
         c = stats["counts"]
-        lines.append(f"✍️ <b>Упражнения за неделю</b> — {stats['total']}: ✅ {c['ok']} · 🟡 {c['near']} · ❌ {c['wrong']}")
+        lines.append(f"✍️ <b>Упражнения за неделю</b> — {stats['total']}: ✅ {c[OK]} · 🟡 {c[NEAR]} · ❌ {c[WRONG]}")
     if weak:
-        items = ", ".join(f"{ex.rule_name(s['rule'])} ({s['wrong']} из {s['count']})" for s in weak)
+        items = ", ".join(f"{cur.rule_name(s['rule'])} ({s['wrong']} из {s['count']})" for s in weak)
         lines.append(f"🔎 Слабые места: {items}")
     if advice:
         lines.append(f"💡 {escape(advice)}")
+    return "\n".join(lines)
+
+
+def _bar(share, width=10):
+    filled = round(share * width)
+    return "█" * filled + "░" * (width - filled)
+
+
+def render_level_progress(rows, working, chosen, top=4):
+    """Уровень по упражнениям: доля уверенно освоенных правил программы на каждом уровне."""
+    lines = ["", "", "📈 <b>Грамматика по упражнениям</b> (программа British Council, A1–B2)"]
+    for row in rows:
+        share = row["confident"] / row["total"] if row["total"] else 0
+        started = row["total"] - len(row["not_started"])
+        if share >= cur.CONFIDENT_SHARE:
+            note = "уверенно"
+        elif row["level"] == working:
+            note = "сейчас изучаешь"
+        elif not started:
+            note = "ещё не проверялось"
+        else:
+            note = f"проверено {started} из {row['total']}"
+        lines.append(f"{row['level']} {_bar(share)} {round(share * 100)}% — {note}")
+    current = next((row for row in rows if row["level"] == working), None)
+    if current is not None:
+        todo = current["learning"] + current["not_started"]
+        if todo:
+            names = ", ".join(escape(r.name) for r in todo[:top])
+            more = f" и ещё {len(todo) - top}" if len(todo) > top else ""
+            lines.append(f"Дальше на {working}: {names}{more}")
+    if working != chosen:
+        lines.append(f"<i>Выбран уровень {chosen}, но на {working} ещё есть пробелы — упражнения их подтянут.</i>")
     return "\n".join(lines)

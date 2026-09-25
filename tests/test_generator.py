@@ -66,6 +66,11 @@ class ParseCardsTest(unittest.TestCase):
         parsed = generator.parse_cards({"response": {"cards": [card("bug", "баг в IT", examples=(("It's a bug.", "Это баг, ОК?"),))]}})
         self.assertEqual(len(parsed), 1)
 
+    def test_bare_list_of_cards_is_accepted(self):
+        text = "```json\n" + json.dumps([card("chill", "отдыхать")], ensure_ascii=False) + "\n```"
+        parsed = generator.parse_cards({"choices": [{"message": {"content": text}}]})
+        self.assertEqual([c["en"] for c in parsed], ["chill"])
+
     def test_bad_examples_and_synonyms_are_dropped_not_the_card(self):
         raw = card("chill", "отдыхать", examples=(("Let's chill.", "Давай отдохнём."), ("бред", "nonsense")),
                    synonyms=(("relax", "расслабиться"), ("", "пусто")))
@@ -78,13 +83,13 @@ class ParseCardsTest(unittest.TestCase):
             self.assertEqual(generator.parse_cards(output), [])
 
     def test_prompt(self):
-        prompt = generator.build_input("C1", 3, "работа в офисе", ["apple", "cat"])
+        prompt = generator.build_input("B2", 3, "работа в офисе", ["apple", "cat"])
         system = prompt["messages"][0]["content"]
-        self.assertIn("CEFR level C1", system)
+        self.assertIn("CEFR level B2", system)
         self.assertIn("Topic: работа в офисе", system)
         self.assertIn("apple, cat", system)
         self.assertEqual(prompt["messages"][1]["content"], "Generate 3 cards.")
-        self.assertIn("json_schema", prompt["response_format"]["type"])
+        self.assertIn('Answer with JSON only, in this shape: {"cards":[{"en":"","ru":"","examples":', system)
         random_topic = generator.build_input("B1", 1)["messages"][0]["content"]
         self.assertTrue(any(f"Topic: {t}." in random_topic for t in generator.RANDOM_TOPICS))
 
@@ -194,14 +199,14 @@ class InboxFlowTest(unittest.TestCase):
         self.msg("/start")
         self.msg("apple - яблоко")
         self.ai.responses.append({"response": {"cards": [card("burnout", "выгорание"), card("chill", "отдыхать"), card("apple", "яблоко")]}})
-        self.msg("/gen 3 C1 работа в офисе")
+        self.msg("/gen 3 B2 работа в офисе")
 
         system = self.ai.calls[-1][1]["messages"][0]["content"]
-        self.assertIn("CEFR level C1", system)
+        self.assertIn("CEFR level B2", system)
         self.assertIn("работа в офисе", system)
         self.assertIn("apple", system)  # known words are listed to avoid
         self.assertEqual([c["en"] for c in self.key("inbox")], ["burnout", "chill"])  # apple filtered out
-        self.assertIn("🆕 Новая карточка · C1 · на проверке ещё 1", self.tg.last_text())
+        self.assertIn("🆕 Новая карточка · B2 · на проверке ещё 1", self.tg.last_text())
         self.assertIn("<b>Burnout</b> — выгорание", self.tg.last_text())
 
         # edit the first card
@@ -266,19 +271,19 @@ class InboxFlowTest(unittest.TestCase):
         self.msg("/start")
         self.press("glv:B1")
         self.msg(cards.GENERATE_BUTTON)
-        self.press("lv:C1")  # только для генерации
+        self.press("lv:B2")  # только для генерации
         settings = self.key("settings")
-        self.assertEqual((settings["level"], settings["gen_level"]), ("B1", "C1"))
+        self.assertEqual((settings["level"], settings["gen_level"]), ("B1", "B2"))
         payload = self.tg.calls[-1][1]
-        self.assertIn("Уровень: <b>C1</b> (свой для генерации)", payload["text"])
-        self.assertEqual(payload["reply_markup"], cards.generate_keyboard("C1", own=True))
+        self.assertIn("Уровень: <b>B2</b> (свой для генерации)", payload["text"])
+        self.assertEqual(payload["reply_markup"], cards.generate_keyboard("B2", own=True))
         self.ai.responses.append({"response": {"cards": [card("chill", "отдыхать")]}})
         self.press("gen:1")
-        self.assertIn("CEFR level C1", self.ai.calls[-1][1]["messages"][0]["content"])
+        self.assertIn("CEFR level B2", self.ai.calls[-1][1]["messages"][0]["content"])
 
         # смена общего уровня не трогает свой уровень генерации...
         self.press("glv:A2")
-        self.assertEqual(self.key("settings")["gen_level"], "C1")
+        self.assertEqual(self.key("settings")["gen_level"], "B2")
         # ...а «как общий» возвращает связь
         self.press("lv:auto")
         self.assertNotIn("gen_level", self.key("settings"))
@@ -291,6 +296,24 @@ class InboxFlowTest(unittest.TestCase):
         self.msg("apple - яблоко")
         self.assertIn("CEFR level A2", self.ai.calls[-1][1]["messages"][0]["content"])
 
+    def test_examples_use_the_grammar_with_gaps(self):
+        self.msg("/start")
+        now = datetime.now(timezone.utc).isoformat()
+        log = [{"at": now, "rule": "a2_present_perfect", "verdict": v, "sentence": "x ___", "answer": "a", "given": "b"}
+               for v in ("wrong", "wrong", "ok")]
+        asyncio.run(self.bot.repo.put(f"mlog:{OWNER.lower()}", log))
+        self.ai.responses.append(self.enrichment())
+        self.msg("apple - яблоко")
+        system = self.ai.calls[-1][1]["messages"][0]["content"]
+        self.assertIn("grammar the learner is practising: present perfect for experience", system)
+
+    def test_old_c1_level_becomes_b2(self):
+        self.msg("/start")
+        asyncio.run(self.bot.repo.put(f"settings:{OWNER.lower()}", {"level": "C1"}))
+        self.ai.responses.append({"response": {"cards": [card("chill", "отдыхать")]}})
+        self.msg("/gen 1")
+        self.assertIn("CEFR level B2", self.ai.calls[-1][1]["messages"][0]["content"])
+
     def test_level_command_still_works(self):
         self.msg("/start")
         self.msg("/level b2")
@@ -298,7 +321,7 @@ class InboxFlowTest(unittest.TestCase):
         self.msg("/level")
         self.assertEqual(self.tg.sent()[-1]["reply_markup"], cards.level_keyboard("B2"))
         self.msg("/level Z9")
-        self.assertIn("A1, A2, B1, B2 или C1", self.tg.last_text())
+        self.assertIn("Уровень: A1, A2, B1 или B2", self.tg.last_text())
 
     def test_gen_limits(self):
         self.msg("/start")

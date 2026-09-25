@@ -1,9 +1,8 @@
 import asyncio
 import json
 import unittest
-from unittest import mock
-
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from shared import cards
 from shared import words as w
@@ -37,7 +36,13 @@ class FakeTelegram:
 
     async def call(self, method, payload):
         self.calls.append((method, payload))
+        if method == "getFile":
+            return {"ok": True, "result": {"file_id": payload["file_id"], "file_path": "voice/file_1.oga"}}
         return {"ok": True, "result": {"message_id": len(self.calls)}}
+
+    async def download(self, file_path):
+        self.calls.append(("download", file_path))
+        return b"OggS-voice"
 
     def sent(self):
         return [p for m, p in self.calls if m == "sendMessage"]

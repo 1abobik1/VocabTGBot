@@ -4,7 +4,6 @@ from datetime import datetime, timedelta, timezone
 
 from shared import cards
 from shared import practice as pr
-from shared import srs
 from shared import words as w
 from shared.bot import Bot
 from shared.schedule import Schedule
