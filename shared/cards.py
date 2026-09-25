@@ -1,6 +1,7 @@
 """Telegram message texts (HTML parse_mode) and keyboards."""
 
 import random
+import re
 from html import escape as _html_escape
 
 from . import compose
@@ -266,6 +267,20 @@ def render_compose_progress(items):
     return text
 
 
+# Английская фраза в кавычках внутри русского текста: 'look forward to', «chill out», "reliable".
+# Апостроф внутри слова (don't) кавычкой не считается: перед открывающей не должно быть буквы.
+_QUOTED_ENGLISH = re.compile(r"(?<![A-Za-z])['‘\"«]([A-Za-z][^'‘’\"«»\n]*?)['’\"»](?![A-Za-z])")
+
+
+def _highlight_english(text):
+    """Русский текст с английскими фразами: кавычки убираются, фразы — жирным."""
+    parts, last = [], 0
+    for match in _QUOTED_ENGLISH.finditer(text):
+        parts += [escape(text[last:match.start()]), f"<b>{escape(match.group(1))}</b>"]
+        last = match.end()
+    return "".join(parts) + escape(text[last:])
+
+
 def render_compose_result(word, items, usage=None):
     """Итог: засчитано ли слово и, если ИИ ответил, как ещё его употребляют."""
     good, total = compose.good_count(items), len(items)
@@ -278,7 +293,7 @@ def render_compose_result(word, items, usage=None):
     if usage:
         tip, examples = usage
         if tip:
-            lines += ["", f"💡 {escape(tip)}"]
+            lines += ["", f"💡 {_highlight_english(tip)}"]
         if examples:
             lines += ["", "<b>Ещё так говорят:</b>"]
             lines += [f"• {escape(e['en'])}\n  <i>{escape(e['ru'])}</i>" for e in examples]

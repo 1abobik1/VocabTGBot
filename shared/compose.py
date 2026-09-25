@@ -125,7 +125,7 @@ def build_usage_request(word, sentences, level, model=ai.DEFAULT_MODEL):
         f"made their own sentences with the word or phrase '{en}' (Russian: '{ru}'). Show what else is worth "
         "knowing about it. 'tip_ru': 1-2 short sentences in natural Russian, addressing the learner as «ты»: other "
         "common meanings or uses of the word and the typical constructions and collocations with it that the "
-        "learner did not use (put English words in quotes). 'examples': exactly 2 short, natural sentences that "
+        "learner did not use (write English words and phrases as they are, without quotes). 'examples': exactly 2 short, natural sentences that "
         "people really say, showing those constructions, each with a natural Russian translation."
     )
     user = "The learner's sentences:\n" + "\n".join(f"- {s}" for s in sentences)

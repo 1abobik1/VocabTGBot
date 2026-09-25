@@ -79,6 +79,13 @@ class ComposeLogicTest(unittest.TestCase):
         self.assertNotIn("→", cards.render_compose_review([item, dict(item)]))
         self.assertTrue(compose.changed(dict(item, corrected="My car is reliable; it never breaks down.")))
 
+    def test_quotes_around_english_are_dropped(self):
+        tip = ("Помни: после фразы идёт -ing. В письме: 'I look forward to your reply' (Жду ответа), "
+               "а ещё ‘chill out’ и \"reliable\". Don't — не трогаем.")
+        text = cards.render_compose_result(WORD, [], (tip, []))
+        self.assertIn("В письме: <b>I look forward to your reply</b> (Жду ответа), а ещё <b>chill out</b> "
+                      "и <b>reliable</b>. Don't — не трогаем.", text)
+
     def test_transcribe_request(self):
         payload = compose.transcribe_request(b"OggS")
         self.assertEqual(base64.b64decode(payload["audio"]), b"OggS")
@@ -163,7 +170,7 @@ class ComposeFlowTest(unittest.TestCase):
         self.assertIn("- Fixed sentence 0.", usage_prompt[1]["content"])            # исправленные предложения
         result = self.tg.sent()[-2]["text"]
         self.assertIn("🏁 <b>Итог</b> · chill\n\nВерно 6 из 6 — засчитано как «Знаю».", result)
-        self.assertIn("💡 Ещё говорят «chill out»", result)
+        self.assertIn("💡 Ещё говорят <b>chill out</b> — расслабиться, и <b>chill</b> — спокойный.", result)
         self.assertIn("<b>Ещё так говорят:</b>\n• Just chill out, it's fine.\n  <i>Расслабься, всё нормально.</i>", result)
         self.assertEqual(self.word()["stage"], 1)                                  # как «Знаю» на новом слове
         self.assertTrue(self.tg.last_text().startswith("Chill"))
