@@ -26,10 +26,10 @@ CARD_END = "23:00"
 CARDS_PER_DAY = "14"
 NEW_WORDS_PER_DAY = "6"
 UTC_OFFSET_HOURS = "3"  # Moscow time, no DST
-# Typed practice at the end of the day: "daily" or a weekday (mon..sun), HH:MM,
-# PRACTICE_BATCH words at a time so an evening session stays short.
+# Typed practice in the morning, before the first card: "daily" or a weekday (mon..sun), HH:MM,
+# PRACTICE_BATCH words at a time so a morning session stays short.
 PRACTICE_DAY = "daily"
-PRACTICE_TIME = "22:30"
+PRACTICE_TIME = "10:00"
 PRACTICE_BATCH = "7"
 # Daily exercises (prepositions, tenses, own words, articles, word forms, phrasal verbs):
 # they arrive at EXERCISE_TIME and wait until done; they never block the word cards.

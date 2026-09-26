@@ -29,7 +29,7 @@ class PracticeFlow:
         waiting = await self.repo.get(practice_key(username), [])
         if not waiting:
             return False
-        # Практика идёт небольшими порциями, чтобы вечерняя сессия была на пару минут.
+        # Практика идёт небольшими порциями, чтобы утренняя сессия была на пару минут.
         batch = waiting[: self.schedule.practice_batch] if self.schedule else waiting
         session = {"ids": [x["id"] for x in batch], "round": pr.RU_EN, "results": {}}
         await self.repo.put(session_key(username), session)

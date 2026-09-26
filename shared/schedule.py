@@ -3,7 +3,7 @@
 With the defaults (10:00-23:00 MSK, 14 cards) the step is 13h / 14 = 55 minutes.
 The Worker cron fires every minute and sends a card only when the minute is a slot.
 NEW_WORDS_PER_DAY of those slots are reserved for words seen for the first time.
-The typed practice runs at PRACTICE_TIME (default 22:00) every day, or on PRACTICE_DAY
+The typed practice runs at PRACTICE_TIME (default 10:00) every day, or on PRACTICE_DAY
 only, and takes at most PRACTICE_BATCH words at a time.
 """
 
@@ -30,7 +30,7 @@ class Schedule:
         cards_per_day=14,
         utc_offset_hours=3,
         practice_day="daily",
-        practice_time="22:30",
+        practice_time="10:00",
         new_words_per_day=6,
         practice_batch=7,
         exercise_time="20:00",

@@ -106,7 +106,7 @@ class GradingTest(unittest.TestCase):
         self.assertEqual(a["archived_at"], now.isoformat())
         self.assertEqual([x["en"] for x in queue], ["q1", "q2", "q3", "b", "c"])
         self.assertEqual((b["stage"], c["stage"]), (1, 0))
-        # опечатка и ошибка возвращаются в обучение завтра утром, а не в тот же вечер
+        # опечатка и ошибка возвращаются в обучение завтра утром, а не в тот же день
         for word in (b, c):
             self.assertEqual((word["box"], word["due_at"]), (0, "2026-09-27T10:00:00+03:00"))
         self.assertEqual(practice, [])
@@ -155,7 +155,7 @@ class PracticeFlowTest(unittest.TestCase):
         self.put("practice", words)
         return words
 
-    def test_evening_practice_full_flow(self):
+    def test_morning_practice_full_flow(self):
         self.seed_practice([
             ("loud", "звонкий", ("The bell is loud.", "Звонок громкий.")),
             ("silence", "тишина", None),
@@ -164,16 +164,16 @@ class PracticeFlowTest(unittest.TestCase):
         ])
         self.put("queue", [w.new_word(n, n + "_ru") for n in ("q1", "q2", "q3", "q4", "q5")])
 
-        self.assertEqual(self.tick(at(22, 29)), [])
-        self.assertEqual(self.tick(at(22, 30)), [OWNER])  # практика каждый день в конце дня
+        self.assertEqual(self.tick(at(9, 59)), [])
+        self.assertEqual(self.tick(at(10, 0)), [OWNER])  # практика каждый день утром, до первой карточки
         round1 = self.tg.last_text()
         self.assertIn("1/3.</b> Напиши по-английски", round1)
         self.assertIn("1) Звонкий\n2) Тишина\n3) Сразу поладить\n4) Звук", round1)
 
-        # слот, попавший на практику, уходит в долг
-        self.tick(at(22, 4))
+        # слоты, попавшие на практику (и 10:00, и следующий), уходят в долг
+        self.tick(at(10, 55))
         self.assertEqual(self.cards_sent(), [])
-        self.assertEqual(self.get("sched")["missed"], 1)
+        self.assertEqual(self.get("sched")["missed"], 2)
 
         self.msg("loud silense hit it off sound")  # опечатка в "silence"
         self.assertIn("2) 🟡 silense → <b>silence</b>", self.tg.sent()[-2]["text"])
@@ -201,8 +201,8 @@ class PracticeFlowTest(unittest.TestCase):
         for word in back.values():
             self.assertEqual(word["due_at"], "2026-09-27T10:00:00+03:00")
 
-        # пропущенный слот доезжает сразу после практики
-        self.assertEqual(len(self.cards_sent()), 1)
+        # пропущенные слоты (10:00 и 10:55) доезжают сразу после практики
+        self.assertEqual(len(self.cards_sent()), 2)
         self.assertEqual(self.get("sched")["missed"], 0)
 
     def test_word_with_transcription_and_variants_is_archived(self):
@@ -239,14 +239,14 @@ class PracticeFlowTest(unittest.TestCase):
     def test_practice_takes_words_in_batches(self):
         self.bot.schedule = Schedule(practice_batch=2)
         self.seed_practice([(f"w{i}", f"с{i}", None) for i in range(5)])
-        self.tick(at(22, 30))
+        self.tick(at(10, 0))
         self.assertEqual(len(self.get("session")["ids"]), 2)
         self.assertIn("🧠 <b>Практика</b> — 2 сл.", self.tg.last_text())
         self.msg("w0 w1")
         self.msg("с0 с1")
         self.assertEqual(self.get("session"), {})
         self.assertEqual(len(self.get("known")), 2)
-        self.assertEqual(len(self.get("practice")), 3)  # остальные ждут следующего вечера
+        self.assertEqual(len(self.get("practice")), 3)  # остальные ждут следующего утра
 
     def test_skip_sentences_button(self):
         self.seed_practice([("loud", "звонкий", ("The bell is loud.", "Звонок громкий."))])
@@ -268,12 +268,12 @@ class PracticeFlowTest(unittest.TestCase):
     def test_practice_without_words(self):
         self.msg("/practice")
         self.assertIn("пока нет слов", self.tg.last_text())
-        self.assertEqual(self.tick(at(22, 30)), [])
+        self.assertEqual(self.tick(at(10, 0)), [])
 
-    def test_unfinished_practice_is_reminded_next_evening(self):
+    def test_unfinished_practice_is_reminded_next_morning(self):
         self.seed_practice([("silence", "тишина", None)])
-        self.tick(at(22, 30))
-        self.tick(at(22, 30, day=(2026, 9, 27)))
+        self.tick(at(10, 0))
+        self.tick(at(10, 0, day=(2026, 9, 27)))
         self.assertIn("Напиши по-английски", self.tg.last_text())
         self.assertIn("ещё не закончена", self.tg.sent()[-2]["text"])
 

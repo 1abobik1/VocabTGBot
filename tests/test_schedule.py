@@ -31,11 +31,11 @@ class ScheduleTest(unittest.TestCase):
     def test_practice_runs_every_day_by_default(self):
         schedule = Schedule()
         for day in (21, 22, 26, 27):  # понедельник, вторник, суббота, воскресенье
-            self.assertTrue(schedule.is_practice_time(datetime(2026, 9, day, 22, 30, tzinfo=MSK)), day)
-        self.assertFalse(schedule.is_practice_time(msk(22, 29)))
+            self.assertTrue(schedule.is_practice_time(datetime(2026, 9, day, 10, 0, tzinfo=MSK)), day)
+        self.assertFalse(schedule.is_practice_time(msk(9, 59)))
         weekly = Schedule(practice_day="sat")
-        self.assertTrue(weekly.is_practice_time(datetime(2026, 9, 26, 22, 30, tzinfo=MSK)))
-        self.assertFalse(weekly.is_practice_time(datetime(2026, 9, 27, 22, 30, tzinfo=MSK)))
+        self.assertTrue(weekly.is_practice_time(datetime(2026, 9, 26, 10, 0, tzinfo=MSK)))
+        self.assertFalse(weekly.is_practice_time(datetime(2026, 9, 27, 10, 0, tzinfo=MSK)))
 
     def test_answer_buffer(self):
         # 20 cards in 10:00-14:00 = every 12 minutes, the last at 13:48: less than 30 minutes left
