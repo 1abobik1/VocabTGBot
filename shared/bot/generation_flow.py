@@ -1,7 +1,7 @@
 """Уровни, генерация карточек ИИ и входящие на проверку."""
 
 
-from .. import cards, generator
+from .. import cards, generator, srs
 from .. import curriculum as cur
 from .. import exercises as ex
 from .. import words as w
@@ -18,11 +18,20 @@ from ..storage import normalize_username
 
 
 class GenerationFlow:
-    async def autogenerate(self):
+    async def autogenerate(self, now=None):
+        """За 20 минут до слота — новое слово от ИИ на случайную тему, если в очереди не осталось
+        новых слов (или она пуста), дневная квота новых ещё не выбрана и прошлое предложение
+        уже разобрано. Слово, как всегда, сначала приходит на проверку."""
+        now = now or self._now()
+        today = self._today(now)
         generated = []
         for user in await self._users_with_chat():
             name = normalize_username(user["username"])
-            if await self.repo.get(queue_key(name), []) or await self.repo.get(inbox_key(name), []):
+            if await self.repo.get(inbox_key(name), []):
+                continue
+            if any(srs.is_new(x) for x in await self.repo.get(queue_key(name), [])):
+                continue
+            if (await self._day_state(name, today))["new"] >= self._new_quota():
                 continue
             if await self.generate_to_inbox(name, user["chat_id"], 1, auto=True):
                 generated.append(user["username"])

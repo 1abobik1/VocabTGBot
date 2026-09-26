@@ -264,7 +264,7 @@ class CardsFlow:
         if self.schedule.is_slot(now):
             return await self.broadcast_cards(count_missed=True, now=now)
         if self.ai is not None and self.schedule.is_slot(now + AUTOGEN_LEAD):
-            return await self.autogenerate()
+            return await self.autogenerate(now)
         return []
 
     async def _cron_report(self, now):

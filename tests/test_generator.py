@@ -470,7 +470,7 @@ class AutogenTest(unittest.TestCase):
     def tick(self, h, m):
         return asyncio.run(self.bot.on_cron(datetime(2026, 9, 21, h, m, tzinfo=MSK)))
 
-    def test_autogen_20_minutes_before_slot_only_when_queue_and_inbox_empty(self):
+    def test_autogen_20_minutes_before_slot_when_queue_and_inbox_empty(self):
         self.ai.responses.append({"response": {"cards": [card("chill", "отдыхать")]}})
         self.assertEqual(self.tick(9, 39), [])
         self.assertEqual(self.ai.calls, [])
@@ -482,9 +482,23 @@ class AutogenTest(unittest.TestCase):
         self.assertEqual(self.tick(10, 58), [])
         self.assertEqual(len(self.ai.calls), 1)
 
-    def test_no_autogen_when_queue_has_words(self):
+    def test_no_autogen_while_the_queue_has_new_words(self):
         store_queue = [w.new_word("cat", "кот")]
         asyncio.run(self.bot.repo.put(f"queue:{OWNER.lower()}", store_queue))
+        self.assertEqual(self.tick(9, 40), [])
+        self.assertEqual(self.ai.calls, [])
+
+    def test_autogen_when_only_reviews_are_left(self):
+        review = w.new_word("cat", "кот", due_at="2026-09-28T10:00:00+03:00")
+        review.update(box=2, stage=1, shown_count=4)  # уже учится, ждёт повтора через три дня
+        asyncio.run(self.bot.repo.put(f"queue:{OWNER.lower()}", [review]))
+        self.ai.responses.append({"response": {"cards": [card("chill", "отдыхать")]}})
+        self.assertEqual(self.tick(9, 40), [OWNER])
+        self.assertIn("Topic: ", self.ai.calls[0][1]["messages"][0]["content"])  # тема случайная
+        self.assertIn("<b>Chill</b>", self.tg.last_text())
+
+    def test_no_autogen_when_the_daily_new_quota_is_used(self):
+        asyncio.run(self.bot.repo.put(f"sched:{OWNER.lower()}", {"date": "2026-09-21", "new": 6, "missed": 0}))
         self.assertEqual(self.tick(9, 40), [])
         self.assertEqual(self.ai.calls, [])
 
