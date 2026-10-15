@@ -129,7 +129,7 @@ class CardsFlow:
         await self.send(
             chat_id,
             cards.render_stats(
-                w.weekly_stats(known), srs.stats(queue, now, today), len(waiting), day["new"], self._new_quota()
+                w.weekly_stats(known, now), srs.stats(queue, now, today), len(waiting), day["new"], self._new_quota()
             )
             + cards.render_practice_stats(practice)
             + cards.render_exercise_stats(exercise_stats, weak, advice)

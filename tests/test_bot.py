@@ -78,6 +78,14 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def stay_active(store, clock):
+    """Пользователь занимается каждый день: перемотка времени в тестах не ставит бота на паузу."""
+    users = json.loads(store.data.get("allowed_users") or "[]")
+    for user in users:
+        user["active_at"] = clock().isoformat()
+    store.data["allowed_users"] = json.dumps(users)
+
+
 class BotTest(unittest.TestCase):
     def setUp(self):
         self.store = FakeStore()
@@ -88,6 +96,7 @@ class BotTest(unittest.TestCase):
 
     def advance(self, days=0, hours=0):
         self.clock.set(self.clock() + timedelta(days=days, hours=hours))
+        stay_active(self.store, self.clock)
 
     def learn_until_practice(self, limit=60):
         """Прогоняет очередь по интервалам, отвечая «Знаю», пока слова не дойдут до практики."""
@@ -175,9 +184,55 @@ class BotTest(unittest.TestCase):
 
     def test_owner_is_seeded_and_chat_id_remembered(self):
         self.msg("/start")
-        self.assertEqual(self.store.json("allowed_users"), [{"username": OWNER, "role": "owner", "chat_id": CHAT}])
+        self.assertEqual(self.store.json("allowed_users"), [{"username": OWNER, "role": "owner", "chat_id": CHAT,
+                                                             "active_at": "2026-09-21T10:00:00+00:00"}])
         self.assertIn("apple - яблоко", self.tg.last_text())
         self.assertEqual(self.tg.sent()[-1]["reply_markup"], cards.main_keyboard())
+
+    def test_two_silent_days_freeze_the_bot_until_any_reply(self):
+        self.msg("/start")
+        self.msg("apple - яблоко")
+        start = self.clock()
+        later = start + timedelta(days=2, minutes=1)
+        self.clock.set(start + timedelta(days=1))
+        run(self.bot.on_cron(self.clock()))
+        self.assertFalse(any("❄️" in p["text"] for p in self.tg.sent()))  # сутки тишины — ещё не пауза
+        self.clock.set(later)
+        run(self.bot.on_cron(later))
+        self.assertIn("❄️ Два дня от тебя не было ответов", self.tg.last_text())
+        self.assertTrue(self.store.json("allowed_users")[0]["frozen"])
+        sent = len(self.tg.sent())
+        for minutes in range(1, 3 * 24 * 60, 7):  # трое суток крона: ни карточек, ни практики, ни отчётов
+            when = later + timedelta(minutes=minutes)
+            self.clock.set(when)
+            run(self.bot.on_cron(when))
+        self.assertEqual(len(self.tg.sent()), sent)
+        self.assertEqual(run(self.bot.broadcast_cards()), [])
+        # любой ответ снимает паузу
+        self.msg(cards.STATS_BUTTON)
+        self.assertIn("▶️ С возвращением!", self.tg.sent()[-2]["text"])
+        self.assertIn("Статистика за неделю", self.tg.last_text())
+        self.assertNotIn("frozen", self.store.json("allowed_users")[0])
+        self.assertEqual(run(self.bot.broadcast_cards()), [OWNER])
+
+    def test_activity_is_saved_at_most_hourly(self):
+        self.msg("/start")
+        writes = self.store.writes
+        self.msg(cards.STATS_BUTTON)
+        self.assertEqual(self.store.writes, writes)                   # минуту спустя список не переписывается
+        self.advance(hours=2)
+        self.msg(cards.STATS_BUTTON)
+        self.assertEqual(self.store.json("allowed_users")[0]["active_at"], self.clock().isoformat(timespec="seconds"))
+
+    def test_users_without_activity_mark_are_not_frozen_at_once(self):
+        self.store.data["allowed_users"] = json.dumps([{"username": OWNER, "role": "owner", "chat_id": CHAT}])
+        self.msg("apple - яблоко")
+        users = json.loads(self.store.data["allowed_users"])
+        users[0].pop("active_at")
+        self.store.data["allowed_users"] = json.dumps(users)
+        run(self.bot.on_cron(self.clock()))                           # отметка ставится, паузы нет
+        self.assertEqual(self.store.json("allowed_users")[0]["active_at"], self.clock().isoformat(timespec="seconds"))
+        self.assertFalse(any("❄️" in p["text"] for p in self.tg.sent()))
 
     def test_username_match_is_case_insensitive(self):
         self.msg("/start", username="ownerUSER")

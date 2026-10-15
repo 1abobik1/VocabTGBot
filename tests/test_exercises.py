@@ -13,7 +13,7 @@ from shared import practice as pr
 from shared import words as w
 from shared.bot import Bot
 from shared.schedule import Schedule
-from tests.test_bot import CHAT, OWNER, FakeStore, FakeTelegram, use_clock
+from tests.test_bot import CHAT, OWNER, FakeStore, FakeTelegram, stay_active, use_clock
 from tests.test_generator import FakeAI
 
 MSK = timezone(timedelta(hours=3))
@@ -409,6 +409,7 @@ class ExerciseFlowTest(unittest.TestCase):
         self.ai.responses.append({"response": "Чаще всего ошибаешься в предлогах времени: on — с днями недели."})
         sunday = datetime(2026, 9, 27, 21, 0, tzinfo=MSK)
         self.clock.set(sunday)
+        stay_active(self.store, self.clock)
         asyncio.run(self.bot.on_cron(sunday))
         report = self.tg.last_text()
         self.assertIn("✍️ <b>Упражнения за неделю</b> — 3: ✅ 1 · 🟡 0 · ❌ 2", report)

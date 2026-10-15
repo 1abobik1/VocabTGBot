@@ -50,6 +50,7 @@ flowchart LR
 - **Practice at 10:00**: type learned words in both directions; a typo is "almost", a mistake means learning it again.
 - **Exercises at 20:00**: A1–B2 grammar from the British Council syllabus (67 rules) plus your own words. The code picks the rules (weak spots, new, review); the AI only writes sentences.
 - **Weekly report**: words learned, mistakes, progress by level A1–B2 and advice from the AI.
+- **Pause**: two days without a reply and the bot stops sending anything; any message or button press resumes it.
 - **Level A1–B2**, exercise topics and archive review live in «⚙️ Настройки» (Settings); friends can be let in with `/allow`, each with their own words.
 
 ## A word's path

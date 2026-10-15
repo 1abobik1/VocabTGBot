@@ -6,12 +6,22 @@
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .. import cards, generator
 from .. import words as w
 from ..keys import ALLOWED_USERS_KEY, session_key, settings_key, state_key
 from ..storage import Repo, find_user, normalize_username
+
+# Пауза: два дня без единого сообщения или нажатия — бот перестаёт писать сам, пока пользователь не вернётся.
+FREEZE_AFTER = timedelta(days=2)
+# Время активности пишется в KV не чаще этого: точность до часа паузе хватает, а запись — лимитный ресурс.
+ACTIVITY_RESOLUTION = timedelta(hours=1)
+FREEZE_NOTICE = (
+    "❄️ Два дня от тебя не было ответов — ставлю обучение на паузу: карточки, практика, упражнения "
+    "и отчёты приходить не будут.\n\nНапиши что угодно или нажми любую кнопку — и всё продолжится."
+)
+UNFREEZE_NOTICE = "▶️ С возвращением! Пауза снята — карточки снова приходят по расписанию."
 
 
 @dataclass
@@ -157,9 +167,26 @@ class BotCore:
         )
 
     async def _users_with_chat(self):
+        """Кому бот пишет сам (крон): известен чат и не стоит пауза."""
         # Только чтение: список заводится воркером при первом сообщении.
         users = await self.repo.get(ALLOWED_USERS_KEY, [])
-        return [u for u in users if u.get("chat_id")]
+        now = self._now()
+        return [u for u in users if u.get("chat_id") and not self._is_frozen(u, now)]
+
+    @staticmethod
+    def _is_frozen(user, now):
+        active = user.get("active_at")
+        return bool(user.get("frozen")) or (active is not None and now - w.parse_iso(active) > FREEZE_AFTER)
+
+    def _touch(self, user):
+        """Отмечает активность пользователя. True — запись изменилась и её нужно сохранить."""
+        now = self._now()
+        active = user.get("active_at")
+        if not user.get("frozen") and active and now - w.parse_iso(active) < ACTIVITY_RESOLUTION:
+            return False
+        user["active_at"] = now.isoformat(timespec="seconds")
+        user.pop("frozen", None)
+        return True
 
     # ---- крон ------------------------------------------------------------------
 
@@ -168,10 +195,28 @@ class BotCore:
         if self.schedule is None:
             return []
         result = []
+        await self._cron_freeze(now)
         for job in (self._cron_practice, self._cron_exercise_pool, self._cron_exercises, self._cron_report,
                     self._cron_cards):
             result += await job(now)
         return result
+
+    async def _cron_freeze(self, now):
+        """Пауза для тех, кто два дня молчит: одно сообщение об этом, дальше тишина."""
+        users = await self.repo.get(ALLOWED_USERS_KEY, [])
+        changed = False
+        for user in users:
+            if not user.get("chat_id") or user.get("frozen"):
+                continue
+            if not user.get("active_at"):
+                user["active_at"] = now.isoformat(timespec="seconds")  # пользователи до появления паузы
+                changed = True
+            elif self._is_frozen(user, now):
+                user["frozen"] = True
+                changed = True
+                await self.send(user["chat_id"], FREEZE_NOTICE)
+        if changed:
+            await self.repo.put(ALLOWED_USERS_KEY, users)
 
     # ---- апдейты Telegram ----------------------------------------------------
 
@@ -194,9 +239,13 @@ class BotCore:
         user = find_user(users, sender.get("username"))
         if user is None:
             return  # чужим не отвечаем
-        if user.get("chat_id") != chat["id"]:
-            user["chat_id"] = chat["id"]
+        was_frozen = self._is_frozen(user, self._now())
+        moved = user.get("chat_id") != chat["id"]
+        user["chat_id"] = chat["id"]
+        if self._touch(user) or moved:
             await self.repo.put(ALLOWED_USERS_KEY, users)
+        if was_frozen:
+            await self.send(chat["id"], UNFREEZE_NOTICE)
         username = normalize_username(user["username"])
         if settings.get("keyboard") != cards.KEYBOARD_VERSION:
             self._keyboard_refresh_chat, self._keyboard_refresh_user = chat["id"], username
